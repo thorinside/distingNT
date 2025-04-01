@@ -36,17 +36,67 @@ local function select_next_state(probs)
     return lk
 end
 
--- Helper function: Apply SATB-style voicing
-local function apply_voicing(close_notes)
-    if not close_notes or #close_notes ~= 4 then return {60, 60, 60, 60} end
-    local v = {};
-    v[1] = close_notes[1] - 12;
-    v[2] = close_notes[3];
-    v[3] = close_notes[2];
-    v[4] = close_notes[4];
-    if v[3] < v[2] then v[3] = v[3] + 12 end
-    if v[4] < v[3] then v[4] = v[4] + 12 end
-    return v
+-- Helper function: Apply Voicing and Inversion
+local function apply_voicing(self, chord_tones)
+    -- DIAGNOSTIC: Check self and parameters upon entry
+    print("apply_voicing: self type=", type(self))
+    if type(self) == "table" then
+        print("apply_voicing: self.parameters type=", type(self.parameters))
+        if type(self.parameters) ~= "table" then
+            -- If parameters are missing here, the caller passed a bad 'self'
+            -- or the host environment failed to provide parameters.
+            return {60, 60, 60, 60} -- Return default to avoid crash
+        end
+    else
+        return {60, 60, 60, 60} -- Cannot proceed without valid self
+    end
+
+    if not chord_tones or #chord_tones ~= 4 then return {60, 60, 60, 60} end
+
+    local inversion = self.parameters[6] -- Get inversion param (1=Root, 2=1st, 3=2nd, 4=3rd)
+    if inversion < 1 or inversion > 4 then inversion = 1 end -- Default to root
+
+    -- 1. Select the bass note based on inversion
+    local bass_note_idx = inversion -- 1=Root, 2=3rd, 3=5th, 4=7th
+    local bass_note = chord_tones[bass_note_idx]
+
+    -- 2. Place the bass note in a lower octave (e.g., around MIDI 48 / C3)
+    -- Adjust bass_note octave
+    while bass_note >= 60 do bass_note = bass_note - 12 end
+    while bass_note < 48 do bass_note = bass_note + 12 end
+
+    -- 3. Arrange remaining notes above the bass note
+    local remaining_notes = {}
+    local ri = 1
+    for i = 1, 4 do
+        if i ~= bass_note_idx then
+            remaining_notes[ri] = chord_tones[i]
+            ri = ri + 1
+        end
+    end
+
+    -- 4. Sort remaining notes and adjust octaves to be above the previous note
+    table.sort(remaining_notes)
+    local voiced_notes = {bass_note}
+    local prev_note = bass_note
+    for i = 1, 3 do
+        local current_note = remaining_notes[i]
+        -- Adjust octave to be >= previous note
+        while current_note < prev_note do
+            current_note = current_note + 12
+        end
+        -- Optional refinement: Could try to minimize leaps here later
+        voiced_notes[i + 1] = current_note
+        prev_note = current_note
+    end
+
+    -- Ensure final output matches SATB order (Bass, Tenor, Alto, Soprano)
+    -- We need to re-sort the upper 3 voices based on final pitch
+    local upper_voices = {voiced_notes[2], voiced_notes[3], voiced_notes[4]}
+    table.sort(upper_voices)
+
+    -- Return final voiced chord {Bass, Tenor, Alto, Soprano}
+    return {voiced_notes[1], upper_voices[1], upper_voices[2], upper_voices[3]}
 end
 
 -- =======================
@@ -200,6 +250,7 @@ return {
         local default_matrix_idx = 1
         local default_clock_div_idx = 4
         local default_transition_idx = 5
+        local default_inversion_idx = 1 -- Add default for inversion
 
         -- State Variables (Initialize using loaded state or defaults)
         self.current_root = state.current_root or default_root
@@ -254,25 +305,33 @@ return {
             [2] = self.target_scale_idx,
             [3] = state.matrix_index or default_matrix_idx,
             [4] = current_clock_div_idx,
-            [5] = current_transition_idx
+            [5] = current_transition_idx,
+            [6] = state.inversion_index or default_inversion_idx -- Add inversion
         }
 
         -- Output Voltages Store & Flag
         self.output_voltages = state.output_voltages or {0.0, 0.0, 0.0, 0.0}
         self.voltages_updated = true
+        -- Cache for voiced MIDI notes
+        self.current_notes_voiced = state.current_notes_voiced or
+                                        {60, 60, 60, 60} -- Default or loaded
 
-        -- Calculate initial chord voltages IF NOT loaded from state
+        -- Calculate initial chord voltages & notes IF NOT loaded from state
         if not state.output_voltages then
-            local initial_notes_close = self:calculate_close_notes(
+            local initial_chord_tones = self:calculate_chord_tones(
                                             self.current_scale_degree, false)
-            if initial_notes_close then
-                local initial_notes_voiced = apply_voicing(initial_notes_close)
+            if initial_chord_tones then
+                -- FIX: Call apply_voicing as a local function, passing self
+                local initial_notes_voiced = apply_voicing(self,
+                                                           initial_chord_tones)
+                self.current_notes_voiced = initial_notes_voiced
                 for i = 1, 4 do
                     self.output_voltages[i] = midi_note_to_volts(
                                                   initial_notes_voiced[i] or 60)
                 end
             else
                 self.output_voltages = {0.0, 0.0, 0.0, 0.0}
+                self.current_notes_voiced = {60, 60, 60, 60} -- Fallback cache
             end
         end
 
@@ -298,125 +357,78 @@ return {
                 {
                     "Transition", self.transition_options_param,
                     default_transition_idx
-                }
+                },
+                {
+                    "Inversion", {"Root", "1st", "2nd", "3rd"},
+                    default_inversion_idx
+                } -- Param 6 definition
             }
         }
     end,
 
     -- =======================
-    -- Central Chord Calculation Function - Returns CLOSE notes for voicing
+    -- Central Chord Calculation Function - Returns UNVOICED chord tones {root, 3rd, 5th, 7th}
     -- =======================
-    calculate_close_notes = function(self, degree_or_root_midi,
+    calculate_chord_tones = function(self, degree_or_root_midi,
                                      is_transition_chord_root)
-        local close_notes = {}
+        local chord_tones = {}
+        local base_midi;
+
         if is_transition_chord_root then
             local chord_root_midi = degree_or_root_midi
             local tt = self.transition_type -- Use local copy for checks
             if tt == "V7" then
-                close_notes = {
-                    chord_root_midi + 0, chord_root_midi + 4,
-                    chord_root_midi + 7, chord_root_midi + 10
+                base_midi = chord_root_midi -- Root of the V7 chord
+                chord_tones = {
+                    base_midi + 0, base_midi + 4, base_midi + 7, base_midi + 10
                 }
             elseif tt == "iv" then
-                close_notes = {
-                    chord_root_midi + 0, chord_root_midi + 3,
-                    chord_root_midi + 7, chord_root_midi + 12
-                }
+                base_midi = chord_root_midi -- Root of the iv chord
+                chord_tones = {
+                    base_midi + 0, base_midi + 3, base_midi + 7, base_midi + 10
+                } -- Minor 7th
             elseif tt == "bVII" then
-                close_notes = {
-                    chord_root_midi + 0, chord_root_midi + 4,
-                    chord_root_midi + 7, chord_root_midi + 12
-                }
+                base_midi = chord_root_midi -- Root of the bVII chord
+                chord_tones = {
+                    base_midi + 0, base_midi + 4, base_midi + 7, base_midi + 10
+                } -- Dominant 7th (common function)
             elseif tt == "dim7" then
-                close_notes = {
-                    chord_root_midi + 0, chord_root_midi + 3,
-                    chord_root_midi + 6, chord_root_midi + 9
+                base_midi = chord_root_midi -- Root of the dim7 chord
+                chord_tones = {
+                    base_midi + 0, base_midi + 3, base_midi + 6, base_midi + 9
                 }
-            else
-                close_notes = {
-                    chord_root_midi + 0, chord_root_midi + 4,
-                    chord_root_midi + 7, chord_root_midi + 10
+            else -- Fallback V7
+                base_midi = chord_root_midi
+                chord_tones = {
+                    base_midi + 0, base_midi + 4, base_midi + 7, base_midi + 10
                 }
-            end -- Fallback V7
-        else -- Calculate diatonic 7th close notes
+            end
+        else -- Calculate diatonic 7th chord tones
             local degree = degree_or_root_midi;
             local scale = self.current_scale_intervals;
             local scale_len = #scale;
-            if scale_len == 0 then return {60, 64, 67, 71} end
+            if scale_len == 0 then return {60, 64, 67, 71} end -- Fallback Cmaj7
             if degree < 1 or degree > scale_len then degree = 1 end
-            local root_i = scale[degree];
-            local idx3 = (degree + 2 - 1) % scale_len + 1;
-            local idx5 = (degree + 4 - 1) % scale_len + 1;
-            local idx7 = (degree + 6 - 1) % scale_len + 1;
-            local i3 = scale[idx3];
-            local i5 = scale[idx5];
-            local i7 = scale[idx7];
-            if i3 < root_i then i3 = i3 + 12 end
-            if i5 < root_i then i5 = i5 + 12 end
-            if i7 < root_i then i7 = i7 + 12 end
-            local base = 60 + self.current_root;
-            close_notes = {base + root_i, base + i3, base + i5, base + i7}
-        end
-        return close_notes
-    end,
 
-    -- =======================
-    -- Helper: Calculate TRANSITION Chord Notes (CLOSE voicing)
-    -- =======================
-    calculate_transition_notes = function(self)
-        if self.target_root == nil then
-            print(self.name ..
-                      ": Error - calculate_transition_notes called with nil target_root.")
-            return nil
-        end
+            local notes = {}
+            local base_note = self.current_root + scale[degree] -- Root note of the chord in the scale
+            local base_midi = 60 + base_note -- Base MIDI near C4
 
-        local trans_type = self.transition_type
-        if trans_type == "Random" then
-            local rand_idx = math.random(1, #self.transition_options)
-            trans_type = self.transition_options[rand_idx]
-            print(self.name .. ": Random transition type chosen: " .. trans_type)
-        end
-
-        local new_root_midi = 60 + self.target_root -- Target root MIDI value (around C4)
-        local chord_notes = {} -- MIDI notes, close voicing base
-
-        if trans_type == "V7" then -- V7 of the target key
-            local dominant_root_midi = new_root_midi + 7
-            chord_notes = {
-                dominant_root_midi, dominant_root_midi + 4,
-                dominant_root_midi + 7, dominant_root_midi + 10
-            }
-        elseif trans_type == "iv" then -- iv relative to the target key (minor subdominant)
-            local subdom_root_midi = new_root_midi + 5
-            chord_notes = {
-                subdom_root_midi, subdom_root_midi + 3, subdom_root_midi + 7,
-                subdom_root_midi + 10
-            } -- Minor 7th chord
-        elseif trans_type == "bVII" then -- bVII relative to the target key (borrowed subtonic)
-            local subtonic_root_midi = new_root_midi - 2 -- Same as +10, but clearer relationship
-            chord_notes = {
-                subtonic_root_midi, subtonic_root_midi + 4,
-                subtonic_root_midi + 7, subtonic_root_midi + 10
-            } -- Major 7th chord (often dominant 7th is used, but let's start here)
-        elseif trans_type == "dim7" then -- dim7 resolving up by semitone to target root
-            local leading_root_midi = new_root_midi - 1
-            chord_notes = {
-                leading_root_midi, leading_root_midi + 3, leading_root_midi + 6,
-                leading_root_midi + 9
-            }
-        else -- Default to V7 if type is unknown
-            print(self.name .. ": Unknown transition type '" .. trans_type ..
-                      "', defaulting to V7.")
-            local dominant_root_midi = new_root_midi + 7
-            chord_notes = {
-                dominant_root_midi, dominant_root_midi + 4,
-                dominant_root_midi + 7, dominant_root_midi + 10
+            -- Calculate intervals relative to the degree's note in the scale
+            for i = 1, 4 do
+                local scale_idx = ((degree - 1) + (i - 1) * 2) % scale_len + 1
+                local octave_offset = math.floor(
+                                          ((degree - 1) + (i - 1) * 2) /
+                                              scale_len)
+                local interval = scale[scale_idx] - scale[degree] -- Interval relative to chord root
+                chord_tones[i] = base_midi + interval + octave_offset * 12
+            end
+            -- Ensure root is first element for clarity, even if not lowest MIDI
+            chord_tones = {
+                chord_tones[1], chord_tones[2], chord_tones[3], chord_tones[4]
             }
         end
-
-        -- Ensure notes are sorted for apply_voicing base
-        table.sort(chord_notes)
-        return chord_notes
+        return chord_tones -- Returns {Root, 3rd, 5th, 7th} MIDI notes (not necessarily sorted/voiced)
     end,
 
     -- =======================
@@ -455,9 +467,12 @@ return {
 
                     print(self.name .. ": Resolved to new root " ..
                               self.current_root .. " (Degree I)")
-                    local notes_close = self:calculate_close_notes(
+                    -- Use calculate_chord_tones
+                    local chord_tones = self:calculate_chord_tones(
                                             self.current_scale_degree, false)
-                    local notes_voiced = apply_voicing(notes_close)
+                    -- FIX: Call apply_voicing as a local function, passing self
+                    local notes_voiced = apply_voicing(self, chord_tones)
+                    self.current_notes_voiced = notes_voiced
                     for i = 1, 4 do
                         self.output_voltages[i] = midi_note_to_volts(
                                                       notes_voiced[i] or 60)
@@ -469,21 +484,44 @@ return {
                     if self.key_change_pending then
                         print(self.name ..
                                   ": New root change detected immediately after resolving. Starting next transition.")
-                        -- Start the *next* transition immediately on this same clock pulse
-                        local trans_notes_close =
-                            self:calculate_transition_notes() -- Uses self.target_root
-                        if trans_notes_close then
-                            local trans_notes_voiced = apply_voicing(
-                                                           trans_notes_close)
+                        -- Determine the transition root MIDI note first
+                        local target_tonic_midi = 60 + self.target_root
+                        local trans_chord_root_midi;
+                        local tt = self.transition_type
+                        if tt == "Random" then
+                            tt = self.transition_options[math.random(
+                                     #self.transition_options)]
+                        end
+
+                        if tt == "V7" then
+                            trans_chord_root_midi = target_tonic_midi + 7;
+                        elseif tt == "iv" then
+                            trans_chord_root_midi = target_tonic_midi + 5;
+                        elseif tt == "bVII" then
+                            trans_chord_root_midi = target_tonic_midi - 2;
+                        elseif tt == "dim7" then
+                            trans_chord_root_midi = target_tonic_midi - 1;
+                        else
+                            trans_chord_root_midi = target_tonic_midi + 7;
+                        end -- Fallback V7
+
+                        -- Use calculate_chord_tones with the calculated root MIDI
+                        local trans_chord_tones =
+                            self:calculate_chord_tones(trans_chord_root_midi,
+                                                       true)
+                        if trans_chord_tones then
+                            -- FIX: Call apply_voicing as a local function, passing self
+                            local trans_notes_voiced = apply_voicing(self,
+                                                                     trans_chord_tones)
+                            self.current_notes_voiced = trans_notes_voiced
                             for i = 1, 4 do
                                 self.output_voltages[i] = midi_note_to_volts(
                                                               trans_notes_voiced[i] or
                                                                   60)
                             end
                             self.is_playing_transition_chord = true
-                            self.root_after_transition = self.target_root -- Store the root we WILL resolve to
-                            self.key_change_pending = false -- Consumed the pending flag
-                            -- Voltages are already marked as updated
+                            self.root_after_transition = self.target_root
+                            self.key_change_pending = false
                         else
                             print(self.name ..
                                       ": Failed to calculate immediate subsequent transition notes.")
@@ -500,10 +538,35 @@ return {
                     print(self.name ..
                               ": Playing transition chord for target root " ..
                               self.target_root)
-                    local trans_notes_close = self:calculate_transition_notes() -- Uses self.target_root
-                    if trans_notes_close then
-                        local trans_notes_voiced = apply_voicing(
-                                                       trans_notes_close)
+                    -- Determine the transition root MIDI note first
+                    local target_tonic_midi = 60 + self.target_root
+                    local trans_chord_root_midi;
+                    local tt = self.transition_type
+                    if tt == "Random" then
+                        tt = self.transition_options[math.random(
+                                 #self.transition_options)]
+                    end
+
+                    if tt == "V7" then
+                        trans_chord_root_midi = target_tonic_midi + 7;
+                    elseif tt == "iv" then
+                        trans_chord_root_midi = target_tonic_midi + 5;
+                    elseif tt == "bVII" then
+                        trans_chord_root_midi = target_tonic_midi - 2;
+                    elseif tt == "dim7" then
+                        trans_chord_root_midi = target_tonic_midi - 1;
+                    else
+                        trans_chord_root_midi = target_tonic_midi + 7;
+                    end -- Fallback V7
+
+                    -- Use calculate_chord_tones with the calculated root MIDI
+                    local trans_chord_tones =
+                        self:calculate_chord_tones(trans_chord_root_midi, true)
+                    if trans_chord_tones then
+                        -- FIX: Call apply_voicing as a local function, passing self
+                        local trans_notes_voiced = apply_voicing(self,
+                                                                 trans_chord_tones)
+                        self.current_notes_voiced = trans_notes_voiced
                         for i = 1, 4 do
                             self.output_voltages[i] = midi_note_to_volts(
                                                           trans_notes_voiced[i] or
@@ -558,9 +621,11 @@ return {
                         else
                             self.current_scale_degree = 1
                         end
-                        notes_close = self:calculate_close_notes(
+                        notes_close = self:calculate_chord_tones(
                                           self.current_scale_degree, false)
-                        notes_voiced = apply_voicing(notes_close)
+                        -- FIX: Call apply_voicing as a local function, passing self
+                        notes_voiced = apply_voicing(self, notes_close)
+                        self.current_notes_voiced = notes_voiced
                         for i = 1, 4 do
                             self.output_voltages[i] = midi_note_to_volts(
                                                           notes_voiced[i] or 60)
@@ -614,17 +679,19 @@ return {
             self.previous_parameters[3] = self.parameters[3]
             self.previous_parameters[4] = self.parameters[4]
             self.previous_parameters[5] = self.parameters[5]
+            self.previous_parameters[6] = self.parameters[6] -- Sync inversion param
 
             -- Calculate tonic chord voltages and store immediately
-            -- FIX: Use colon notation for method call
-            local notes_close = self:calculate_close_notes(
+            local chord_tones = self:calculate_chord_tones(
                                     self.current_scale_degree, false)
-            local notes_voiced = apply_voicing(notes_close)
+            -- FIX: Call apply_voicing as a local function, passing self
+            local notes_voiced = apply_voicing(self, chord_tones)
+            self.current_notes_voiced = notes_voiced
             for i = 1, 4 do
                 self.output_voltages[i] =
                     midi_note_to_volts(notes_voiced[i] or 60)
             end
-            self.voltages_updated = true -- Mark for output in step
+            self.voltages_updated = true
         end
     end,
 
@@ -638,9 +705,11 @@ return {
         local matrix_param_idx = self.parameters[3]
         local clock_div_param_idx = self.parameters[4]
         local transition_param_idx = self.parameters[5]
+        local inversion_param_idx = self.parameters[6] -- Read new param
 
         -- Update target_root immediately and flag if change occurred
-        if root_param ~= self.target_root then
+        -- Ensure root_param is not nil before comparing or assigning
+        if root_param ~= nil and root_param ~= self.target_root then
             local old_target = self.target_root
             self.target_root = root_param
             if not self.is_playing_transition_chord then
@@ -678,6 +747,12 @@ return {
             self.previous_parameters[5] = transition_param_idx
         end
 
+        -- Handle inversion change (update immediately, handled by apply_voicing)
+        if inversion_param_idx ~= self.previous_parameters[6] then
+            self.previous_parameters[6] = inversion_param_idx
+            -- No internal state changes needed here, apply_voicing uses param directly
+        end
+
         -- Output Logic: Return cached voltages if they were updated
         if self.voltages_updated then
             self.voltages_updated = false;
@@ -689,7 +764,31 @@ return {
 
     -- Draw Function (Updated display logic for faster transitions)
     draw = function(self)
-        local root_name = note_names[self.current_root + 1];
+        -- DIAGNOSTIC: Check parameters table at entry
+        if type(self) ~= "table" then
+            -- Should not happen based on previous diagnostics, but safety first
+            drawText(10, 10, "Draw Error: self invalid!", 15)
+            return true
+        end
+        if type(self.parameters) ~= "table" then
+            drawText(10, 10, "Draw Error: self.parameters is " ..
+                         type(self.parameters) .. "!", 15)
+            print("Draw Error: self.parameters is of type: " ..
+                      type(self.parameters))
+            return true -- Cannot proceed without parameters
+        end
+        -- Add check for current_root as well, just in case
+        if type(self.current_root) ~= "number" then
+            drawText(10, 20, "Draw Error: self.current_root is " ..
+                         type(self.current_root) .. "!", 15)
+            print("Draw Error: self.current_root is of type: " ..
+                      type(self.current_root))
+            -- Allow drawing basic info maybe?
+            -- return true
+        end
+
+        -- Proceed with drawing logic, now safer
+        local root_name = note_names[(self.current_root or 0) + 1]; -- Use fallback if current_root check above is removed
         local scale_name = self.current_scale_name or "?? Scale";
         local matrix_name = self.current_matrix_name or "?? Matrix";
         local degree = self.current_scale_degree or 1;
@@ -728,8 +827,13 @@ return {
                 degree_display = "?/I"
             end
         elseif self.key_change_pending then
-            root_display = root_name .. " (->" ..
-                               note_names[self.target_root + 1] .. ")";
+            local target_root_name = "???"
+            if self.target_root ~= nil then
+                target_root_name = note_names[self.target_root + 1]
+            else
+                -- Warning already printed if this state occurs
+            end
+            root_display = root_name .. " (->" .. target_root_name .. ")";
             degree_display = deg_rom .. " (Pending Key)";
         else
             degree_display = deg_rom
@@ -746,10 +850,17 @@ return {
         drawText(x, y, "Root: " .. root_display .. " Scale: " .. scale_display);
         y = y + lh;
 
-        -- Clock Div and Transition Type Display (Simplified)
-        local clk_txt = self.clock_division_options[self.parameters[4]] or "???"
-        local trans_txt = self.transition_options_param[self.parameters[5]] or
-                              "???"
+        -- Clock Div and Transition Type Display
+        -- Use pcall for safety when accessing parameters, though the check above should prevent this
+        local clock_param_val = self.parameters[4]
+        local trans_param_val = self.parameters[5]
+        local clk_txt = type(clock_param_val) == 'number' and
+                            self.clock_division_options[clock_param_val] or
+                            "Err"
+        local trans_txt = type(trans_param_val) == 'number' and
+                              self.transition_options_param[trans_param_val] or
+                              "Err"
+
         drawText(x, y, "Matrix: " .. matrix_name .. " Div: 1/" .. clk_txt ..
                      " Tr: " .. trans_txt);
         y = y + lh;
@@ -757,13 +868,13 @@ return {
         y = y + lh + 2;
 
         drawText(x, y, "Chord:");
-        if chord_notes_volts then
-            local notes_to_draw = {};
+        -- Use cached MIDI notes instead of converting from voltage
+        local notes_to_draw = self.current_notes_voiced;
+        if notes_to_draw then
             for i = 1, 4 do
-                notes_to_draw[i] = math.floor(chord_notes_volts[i] * 12 + 60.5)
-            end
-            for i = 1, 4 do
-                local nd = get_note_name(notes_to_draw[i]);
+                -- Directly use the cached MIDI note
+                local note_midi = notes_to_draw[i] or 60 -- Use default if nil
+                local nd = get_note_name(note_midi);
                 drawText(x + 50 + (i - 1) * 45, y, nd, 12);
             end
         else
@@ -796,8 +907,12 @@ return {
             -- Transition Type State
             transition_index = self.previous_parameters[5],
 
+            -- Inversion State
+            inversion_index = self.previous_parameters[6],
+
             -- Output State
-            output_voltages = self.output_voltages
+            output_voltages = self.output_voltages,
+            current_notes_voiced = self.current_notes_voiced
         }
         return state
     end

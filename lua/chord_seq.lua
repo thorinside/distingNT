@@ -313,6 +313,65 @@ return {
     end,
 
     -- =======================
+    -- Helper: Calculate TRANSITION Chord Notes (CLOSE voicing)
+    -- =======================
+    calculate_transition_notes = function(self)
+        if self.target_root == nil then
+            print(self.name ..
+                      ": Error - calculate_transition_notes called with nil target_root.")
+            return nil
+        end
+
+        local trans_type = self.transition_type
+        if trans_type == "Random" then
+            local rand_idx = math.random(1, #self.transition_options)
+            trans_type = self.transition_options[rand_idx]
+            print(self.name .. ": Random transition type chosen: " .. trans_type)
+        end
+
+        local new_root_midi = 60 + self.target_root -- Target root MIDI value (around C4)
+        local chord_notes = {} -- MIDI notes, close voicing base
+
+        if trans_type == "V7" then -- V7 of the target key
+            local dominant_root_midi = new_root_midi + 7
+            chord_notes = {
+                dominant_root_midi, dominant_root_midi + 4,
+                dominant_root_midi + 7, dominant_root_midi + 10
+            }
+        elseif trans_type == "iv" then -- iv relative to the target key (minor subdominant)
+            local subdom_root_midi = new_root_midi + 5
+            chord_notes = {
+                subdom_root_midi, subdom_root_midi + 3, subdom_root_midi + 7,
+                subdom_root_midi + 10
+            } -- Minor 7th chord
+        elseif trans_type == "bVII" then -- bVII relative to the target key (borrowed subtonic)
+            local subtonic_root_midi = new_root_midi - 2 -- Same as +10, but clearer relationship
+            chord_notes = {
+                subtonic_root_midi, subtonic_root_midi + 4,
+                subtonic_root_midi + 7, subtonic_root_midi + 10
+            } -- Major 7th chord (often dominant 7th is used, but let's start here)
+        elseif trans_type == "dim7" then -- dim7 resolving up by semitone to target root
+            local leading_root_midi = new_root_midi - 1
+            chord_notes = {
+                leading_root_midi, leading_root_midi + 3, leading_root_midi + 6,
+                leading_root_midi + 9
+            }
+        else -- Default to V7 if type is unknown
+            print(self.name .. ": Unknown transition type '" .. trans_type ..
+                      "', defaulting to V7.")
+            local dominant_root_midi = new_root_midi + 7
+            chord_notes = {
+                dominant_root_midi, dominant_root_midi + 4,
+                dominant_root_midi + 7, dominant_root_midi + 10
+            }
+        end
+
+        -- Ensure notes are sorted for apply_voicing base
+        table.sort(chord_notes)
+        return chord_notes
+    end,
+
+    -- =======================
     -- Gate Function - Handles Clock, Immediate Transition Triggering & Resolution
     -- =======================
     gate = function(self, input, rising)
@@ -486,7 +545,7 @@ return {
             end
             self.previous_parameters[2] = current_scale_idx;
             param_changed = true;
-        end-- Note: Chord won't update until next clock trigger if change occurs mid-transition
+        end -- Note: Chord won't update until next clock trigger if change occurs mid-transition
         local current_matrix_idx = self.parameters[3];
         if current_matrix_idx ~= self.previous_parameters[3] then
             self.current_matrix_name = self.matrix_names[current_matrix_idx];
@@ -519,7 +578,7 @@ return {
         -- === Output Logic ===
         if self.voltages_updated_in_gate then
             self.voltages_updated_in_gate = false;
-            return self.output_voltages;
+            return self.output_voltages
         else
             return nil
         end

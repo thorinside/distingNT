@@ -38,23 +38,17 @@ end
 
 -- Helper function: Apply Voicing and Inversion
 local function apply_voicing(self, chord_tones)
-    -- DIAGNOSTIC: Check self and parameters upon entry
-    print("apply_voicing: self type=", type(self))
-    if type(self) == "table" then
-        print("apply_voicing: self.parameters type=", type(self.parameters))
-        if type(self.parameters) ~= "table" then
-            -- If parameters are missing here, the caller passed a bad 'self'
-            -- or the host environment failed to provide parameters.
-            return {60, 60, 60, 60} -- Return default to avoid crash
-        end
-    else
-        return {60, 60, 60, 60} -- Cannot proceed without valid self
-    end
+    -- Remove diagnostic checks
 
     if not chord_tones or #chord_tones ~= 4 then return {60, 60, 60, 60} end
 
+    if type(self) ~= "table" or type(self.parameters) ~= "table" then
+        -- Should not happen if called correctly, but safety return
+        return {60, 60, 60, 60}
+    end
+
     local inversion = self.parameters[6] -- Get inversion param (1=Root, 2=1st, 3=2nd, 4=3rd)
-    if inversion < 1 or inversion > 4 then inversion = 1 end -- Default to root
+    if inversion == nil or inversion < 1 or inversion > 4 then inversion = 1 end -- Default to root, handle nil
 
     -- 1. Select the bass note based on inversion
     local bass_note_idx = inversion -- 1=Root, 2=3rd, 3=5th, 4=7th
@@ -105,10 +99,29 @@ end
 return {
     name = "Markov Chord Seq",
     author = "AI Assistant & User",
+    SCRIPT_VERSION = 1, -- Version for state compatibility
 
     init = function(self)
         -- Define state locally for easier access, handling nil case
-        local state = self.state or {}
+        local state = self.state
+        local use_loaded_state = false
+
+        -- Check state version compatibility and LOG CONTENTS
+        if state and type(state) == "table" then
+            if state.script_version and state.script_version ==
+                self.SCRIPT_VERSION then
+                use_loaded_state = true
+                -- Keep state as is
+            elseif state.script_version then
+                state = {} -- Discard incompatible state
+            else
+                state = {} -- Discard unversioned state
+            end
+        elseif state then
+            state = {} -- Discard invalid state
+        else
+            state = {} -- Ensure state is an empty table if self.state was nil
+        end
 
         -- Scale Definitions (Same)
         self.scales = {
@@ -244,84 +257,109 @@ return {
         end
         table.sort(self.matrix_names)
 
-        -- Parameter Defaults
+        -- Clock Div Options
+        self.clock_division_options = {
+            "1", "2", "3", "4", "6", "8", "12", "16", "24", "32"
+        };
+        self.clock_division_values = {1, 2, 3, 4, 6, 8, 12, 16, 24, 32};
+
+        -- Transition Type Options
+        self.transition_options_param = {"V7", "iv", "bVII", "dim7", "Random"};
+        self.transition_options = {"V7", "iv", "bVII", "dim7"};
+
+        -- Inversion Options
+        local inversion_options = {"Root", "1st", "2nd", "3rd"} -- Define locally for param def
+
+        -- Parameter Defaults (Used ONLY for the definition table)
         local default_root = 0
         local default_scale_idx = 1
         local default_matrix_idx = 1
         local default_clock_div_idx = 4
         local default_transition_idx = 5
-        local default_inversion_idx = 1 -- Add default for inversion
+        local default_inversion_idx = 1
 
-        -- State Variables (Initialize using loaded state or defaults)
-        self.current_root = state.current_root or default_root
-        local initial_scale_idx = state.scale_index or default_scale_idx
-        self.current_scale_name = self.scale_names[initial_scale_idx]
-        self.target_scale_idx = initial_scale_idx
-        self.scale_change_pending = state.scale_change_pending or false -- Load pending state
+        -- --- Load or Set Parameter INDICES ---
+        -- Use loaded index from state, or fallback to default index
+        local loaded_root = state.current_root or default_root -- Root itself is stored
+        local loaded_scale_idx = state.scale_index or default_scale_idx
+        local loaded_matrix_idx = state.matrix_index or default_matrix_idx
+        local loaded_clock_div_idx = state.clock_division_index or
+                                         default_clock_div_idx
+        local loaded_transition_idx = state.transition_index or
+                                          default_transition_idx
+        local loaded_inversion_idx = state.inversion_index or
+                                         default_inversion_idx
 
-        self.current_matrix_name = self.matrix_names[state.matrix_index or
-                                       default_matrix_idx]
+        -- Validate loaded indices (prevent errors if saved state is somehow invalid)
+        if loaded_scale_idx < 1 or loaded_scale_idx > #self.scale_names then
+            loaded_scale_idx = default_scale_idx
+        end
+        if loaded_matrix_idx < 1 or loaded_matrix_idx > #self.matrix_names then
+            loaded_matrix_idx = default_matrix_idx
+        end
+        if loaded_clock_div_idx < 1 or loaded_clock_div_idx >
+            #self.clock_division_values then
+            loaded_clock_div_idx = default_clock_div_idx
+        end
+        if loaded_transition_idx < 1 or loaded_transition_idx >
+            #self.transition_options_param then
+            loaded_transition_idx = default_transition_idx
+        end
+        if loaded_inversion_idx < 1 or loaded_inversion_idx > #inversion_options then
+            loaded_inversion_idx = default_inversion_idx
+        end
+        if loaded_root < 0 or loaded_root > 11 then
+            loaded_root = default_root
+        end
+
+        -- --- Initialize Internal State Variables ---
+        -- Use the effective loaded/default values
+        self.current_root = loaded_root
+        self.target_root = state.target_root or self.current_root -- Target might differ if saved mid-change
+
+        self.current_scale_name = self.scale_names[loaded_scale_idx]
+        self.target_scale_idx = loaded_scale_idx
+        self.scale_change_pending = state.scale_change_pending or false
+
+        self.current_matrix_name = self.matrix_names[loaded_matrix_idx]
         self.current_scale_intervals = self.scales[self.current_scale_name]
         self.current_matrix = self.matrices[self.current_matrix_name]
         self.current_scale_degree = state.current_scale_degree or 1
 
-        -- Key Change State
-        self.target_root = state.target_root or self.current_root
         self.key_change_pending = state.key_change_pending or false
         self.is_playing_transition_chord =
             state.is_playing_transition_chord or false;
         self.root_after_transition = state.root_after_transition
 
-        -- Clock Div Stuff
-        self.clock_division_options = {
-            "1", "2", "3", "4", "6", "8", "12", "16", "24", "32"
-        };
-        self.clock_division_values = {1, 2, 3, 4, 6, 8, 12, 16, 24, 32};
-        local current_clock_div_idx = state.clock_division_index or
-                                          default_clock_div_idx
-        if current_clock_div_idx < 1 or current_clock_div_idx >
-            #self.clock_division_values then
-            current_clock_div_idx = default_clock_div_idx
-        end
         self.clock_division_steps =
-            self.clock_division_values[current_clock_div_idx];
+            self.clock_division_values[loaded_clock_div_idx];
         self.internal_clock_count = state.internal_clock_count or 0;
 
-        -- Transition Type Definitions
-        self.transition_options_param = {"V7", "iv", "bVII", "dim7", "Random"};
-        self.transition_options = {"V7", "iv", "bVII", "dim7"};
-        local current_transition_idx = state.transition_index or
-                                           default_transition_idx
-        if current_transition_idx < 1 or current_transition_idx >
-            #self.transition_options_param then
-            current_transition_idx = default_transition_idx
-        end
         self.transition_type =
-            self.transition_options_param[current_transition_idx]
+            self.transition_options_param[loaded_transition_idx]
 
-        -- Previous Parameter Values Store
+        -- --- Initialize Previous Parameter Tracker ---
+        -- This MUST reflect the parameter values the script is starting with
         self.previous_parameters = {
-            [1] = self.target_root,
-            [2] = self.target_scale_idx,
-            [3] = state.matrix_index or default_matrix_idx,
-            [4] = current_clock_div_idx,
-            [5] = current_transition_idx,
-            [6] = state.inversion_index or default_inversion_idx -- Add inversion
+            [1] = self.target_root, -- Reflects Param 1 value on load
+            [2] = loaded_scale_idx,
+            [3] = loaded_matrix_idx,
+            [4] = loaded_clock_div_idx,
+            [5] = loaded_transition_idx,
+            [6] = loaded_inversion_idx
         }
 
-        -- Output Voltages Store & Flag
+        -- --- Initialize Outputs ---
         self.output_voltages = state.output_voltages or {0.0, 0.0, 0.0, 0.0}
-        self.voltages_updated = true
-        -- Cache for voiced MIDI notes
+        self.voltages_updated = true -- Assume update needed initially
         self.current_notes_voiced = state.current_notes_voiced or
-                                        {60, 60, 60, 60} -- Default or loaded
+                                        {60, 60, 60, 60}
 
-        -- Calculate initial chord voltages & notes IF NOT loaded from state
+        -- Calculate initial chord IF NOT loaded from state (using loaded state vars)
         if not state.output_voltages then
             local initial_chord_tones = self:calculate_chord_tones(
                                             self.current_scale_degree, false)
             if initial_chord_tones then
-                -- FIX: Call apply_voicing as a local function, passing self
                 local initial_notes_voiced = apply_voicing(self,
                                                            initial_chord_tones)
                 self.current_notes_voiced = initial_notes_voiced
@@ -331,11 +369,11 @@ return {
                 end
             else
                 self.output_voltages = {0.0, 0.0, 0.0, 0.0}
-                self.current_notes_voiced = {60, 60, 60, 60} -- Fallback cache
+                self.current_notes_voiced = {60, 60, 60, 60}
             end
         end
 
-        -- I/O & Parameter Definitions
+        -- --- Return I/O and Parameter DEFINITIONS ---
         return {
             inputs = {kGate, kTrigger},
             outputs = {kLinear, kLinear, kLinear, kLinear},
@@ -347,21 +385,15 @@ return {
                 [4] = "Note 4 (Soprano)"
             },
             parameters = {
-                {"Root Note", 0, 11, default_root, kMIDINote},
-                {"Scale", self.scale_names, default_scale_idx},
-                {"Matrix", self.matrix_names, default_matrix_idx},
-                {
-                    "Clock Div", self.clock_division_options,
-                    default_clock_div_idx
-                },
+                -- Use loaded state values as the "default" sent to the host
+                {"Root Note", 0, 11, loaded_root, kMIDINote},
+                {"Scale", self.scale_names, loaded_scale_idx},
+                {"Matrix", self.matrix_names, loaded_matrix_idx},
+                {"Clock Div", self.clock_division_options, loaded_clock_div_idx},
                 {
                     "Transition", self.transition_options_param,
-                    default_transition_idx
-                },
-                {
-                    "Inversion", {"Root", "1st", "2nd", "3rd"},
-                    default_inversion_idx
-                } -- Param 6 definition
+                    loaded_transition_idx
+                }, {"Inversion", inversion_options, loaded_inversion_idx}
             }
         }
     end,
@@ -461,12 +493,8 @@ return {
                         self.current_scale_intervals =
                             self.scales[self.current_scale_name]
                         self.scale_change_pending = false
-                        print(self.name .. ": Scale change applied to " ..
-                                  self.current_scale_name .. " on resolution.")
                     end
 
-                    print(self.name .. ": Resolved to new root " ..
-                              self.current_root .. " (Degree I)")
                     -- Use calculate_chord_tones
                     local chord_tones = self:calculate_chord_tones(
                                             self.current_scale_degree, false)
@@ -482,8 +510,6 @@ return {
 
                     -- *** After resolving, check if another key change is already pending ***
                     if self.key_change_pending then
-                        print(self.name ..
-                                  ": New root change detected immediately after resolving. Starting next transition.")
                         -- Determine the transition root MIDI note first
                         local target_tonic_midi = 60 + self.target_root
                         local trans_chord_root_midi;
@@ -523,8 +549,6 @@ return {
                             self.root_after_transition = self.target_root
                             self.key_change_pending = false
                         else
-                            print(self.name ..
-                                      ": Failed to calculate immediate subsequent transition notes.")
                             self.is_playing_transition_chord = false
                             self.key_change_pending = false -- Clear flag anyway
                             -- Let the code below handle the normal progression
@@ -535,9 +559,6 @@ return {
                 elseif self.key_change_pending then
                     -- A key change IS pending, start the transition NOW.
                     -- Scale change is NOT applied before the transition chord itself.
-                    print(self.name ..
-                              ": Playing transition chord for target root " ..
-                              self.target_root)
                     -- Determine the transition root MIDI note first
                     local target_tonic_midi = 60 + self.target_root
                     local trans_chord_root_midi;
@@ -578,8 +599,6 @@ return {
                         new_notes_calculated = true
                         self.voltages_updated = true
                     else
-                        print(self.name ..
-                                  ": Failed to calculate transition notes.")
                         self.key_change_pending = false -- Clear flag even if failed
                         -- Fall through to normal progression if calculation fails
                     end
@@ -594,8 +613,6 @@ return {
                         self.current_scale_intervals =
                             self.scales[self.current_scale_name]
                         self.scale_change_pending = false
-                        print(self.name .. ": Scale change applied to " ..
-                                  self.current_scale_name .. " on next chord.")
                     end
 
                     local matrix = self.current_matrix
@@ -649,7 +666,6 @@ return {
     -- =======================
     trigger = function(self, input)
         if input == 2 then -- Reset Input
-            print(self.name .. ": Reset received.")
             -- Reset state to current parameters
             self.current_root = self.parameters[1] -- Use current param value
             self.target_root = self.current_root -- Sync target to current
@@ -664,8 +680,6 @@ return {
                 self.current_scale_intervals =
                     self.scales[self.current_scale_name]
                 self.scale_change_pending = false
-                print(self.name .. ": Scale change applied to " ..
-                          self.current_scale_name .. " on reset.")
             end
             -- If no scale change pending, ensure target reflects current
             self.target_scale_idx = self.parameters[2]
@@ -764,35 +778,19 @@ return {
 
     -- Draw Function (Updated display logic for faster transitions)
     draw = function(self)
-        -- DIAGNOSTIC: Check parameters table at entry
-        if type(self) ~= "table" then
-            -- Should not happen based on previous diagnostics, but safety first
-            drawText(10, 10, "Draw Error: self invalid!", 15)
+        -- Proceed with drawing logic
+        -- Ensure basic state exists, fallback if needed
+        if type(self) ~= "table" or type(self.parameters) ~= "table" or
+            type(self.current_root) ~= "number" then
+            -- Draw minimal error message if core state is broken
+            drawText(10, 10, "Draw Error: Invalid state!", 15)
             return true
         end
-        if type(self.parameters) ~= "table" then
-            drawText(10, 10, "Draw Error: self.parameters is " ..
-                         type(self.parameters) .. "!", 15)
-            print("Draw Error: self.parameters is of type: " ..
-                      type(self.parameters))
-            return true -- Cannot proceed without parameters
-        end
-        -- Add check for current_root as well, just in case
-        if type(self.current_root) ~= "number" then
-            drawText(10, 20, "Draw Error: self.current_root is " ..
-                         type(self.current_root) .. "!", 15)
-            print("Draw Error: self.current_root is of type: " ..
-                      type(self.current_root))
-            -- Allow drawing basic info maybe?
-            -- return true
-        end
 
-        -- Proceed with drawing logic, now safer
-        local root_name = note_names[(self.current_root or 0) + 1]; -- Use fallback if current_root check above is removed
+        local root_name = note_names[self.current_root + 1];
         local scale_name = self.current_scale_name or "?? Scale";
         local matrix_name = self.current_matrix_name or "?? Matrix";
         local degree = self.current_scale_degree or 1;
-        local chord_notes_volts = self.output_voltages;
         local y = 18;
         local x = 10;
         local lh = 9;
@@ -830,8 +828,6 @@ return {
             local target_root_name = "???"
             if self.target_root ~= nil then
                 target_root_name = note_names[self.target_root + 1]
-            else
-                -- Warning already printed if this state occurs
             end
             root_display = root_name .. " (->" .. target_root_name .. ")";
             degree_display = deg_rom .. " (Pending Key)";
@@ -851,7 +847,6 @@ return {
         y = y + lh;
 
         -- Clock Div and Transition Type Display
-        -- Use pcall for safety when accessing parameters, though the check above should prevent this
         local clock_param_val = self.parameters[4]
         local trans_param_val = self.parameters[5]
         local clk_txt = type(clock_param_val) == 'number' and
@@ -872,8 +867,7 @@ return {
         local notes_to_draw = self.current_notes_voiced;
         if notes_to_draw then
             for i = 1, 4 do
-                -- Directly use the cached MIDI note
-                local note_midi = notes_to_draw[i] or 60 -- Use default if nil
+                local note_midi = notes_to_draw[i] or 60
                 local nd = get_note_name(note_midi);
                 drawText(x + 50 + (i - 1) * 45, y, nd, 12);
             end
@@ -885,6 +879,8 @@ return {
 
     serialise = function(self)
         local state = {
+            script_version = self.SCRIPT_VERSION, -- Save current version
+
             -- Core state
             current_root = self.current_root,
             target_root = self.target_root,

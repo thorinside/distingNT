@@ -57,6 +57,9 @@ return {
     author = "AI Assistant & User",
 
     init = function(self)
+        -- Define state locally for easier access, handling nil case
+        local state = self.state or {}
+
         -- Scale Definitions (Same)
         self.scales = {
             ["Major"] = {0, 2, 4, 5, 7, 9, 11},
@@ -191,47 +194,86 @@ return {
         end
         table.sort(self.matrix_names)
 
-        -- State Variables
-        self.current_root = 0;
-        self.current_scale_name = self.scale_names[1];
-        self.current_matrix_name = self.matrix_names[1];
-        self.current_scale_intervals = self.scales[self.current_scale_name];
-        self.current_matrix = self.matrices[self.current_matrix_name];
-        self.current_scale_degree = 1;
-        self.clock_step = 0;
+        -- Parameter Defaults
+        local default_root = 0
+        local default_scale_idx = 1
+        local default_matrix_idx = 1
+        local default_clock_div_idx = 4
+        local default_transition_idx = 5
+
+        -- State Variables (Initialize using loaded state or defaults)
+        self.current_root = state.current_root or default_root
+        local initial_scale_idx = state.scale_index or default_scale_idx
+        self.current_scale_name = self.scale_names[initial_scale_idx]
+        self.target_scale_idx = initial_scale_idx
+        self.scale_change_pending = state.scale_change_pending or false -- Load pending state
+
+        self.current_matrix_name = self.matrix_names[state.matrix_index or
+                                       default_matrix_idx]
+        self.current_scale_intervals = self.scales[self.current_scale_name]
+        self.current_matrix = self.matrices[self.current_matrix_name]
+        self.current_scale_degree = state.current_scale_degree or 1
 
         -- Key Change State
-        self.target_root = nil;
-        self.transition_type = "V7";
-        self.key_change_armed = false; -- Now just arms the transition for next clock
-        self.is_playing_transition_chord = false; -- Tracks if V7/etc. is active, waiting for resolution
+        self.target_root = state.target_root or self.current_root
+        self.key_change_pending = state.key_change_pending or false
+        self.is_playing_transition_chord =
+            state.is_playing_transition_chord or false;
+        self.root_after_transition = state.root_after_transition
 
         -- Clock Div Stuff
         self.clock_division_options = {
             "1", "2", "3", "4", "6", "8", "12", "16", "24", "32"
         };
         self.clock_division_values = {1, 2, 3, 4, 6, 8, 12, 16, 24, 32};
-        self.clock_division_steps = self.clock_division_values[4];
-
-        -- Previous Parameter Values Store
-        self.previous_parameters = {[1] = 0, [2] = 1, [3] = 1, [4] = 4, [5] = 5}
+        local current_clock_div_idx = state.clock_division_index or
+                                          default_clock_div_idx
+        if current_clock_div_idx < 1 or current_clock_div_idx >
+            #self.clock_division_values then
+            current_clock_div_idx = default_clock_div_idx
+        end
+        self.clock_division_steps =
+            self.clock_division_values[current_clock_div_idx];
+        self.internal_clock_count = state.internal_clock_count or 0;
 
         -- Transition Type Definitions
         self.transition_options_param = {"V7", "iv", "bVII", "dim7", "Random"};
         self.transition_options = {"V7", "iv", "bVII", "dim7"};
+        local current_transition_idx = state.transition_index or
+                                           default_transition_idx
+        if current_transition_idx < 1 or current_transition_idx >
+            #self.transition_options_param then
+            current_transition_idx = default_transition_idx
+        end
+        self.transition_type =
+            self.transition_options_param[current_transition_idx]
+
+        -- Previous Parameter Values Store
+        self.previous_parameters = {
+            [1] = self.target_root,
+            [2] = self.target_scale_idx,
+            [3] = state.matrix_index or default_matrix_idx,
+            [4] = current_clock_div_idx,
+            [5] = current_transition_idx
+        }
 
         -- Output Voltages Store & Flag
-        self.output_voltages = {0.0, 0.0, 0.0, 0.0}
-        self.voltages_updated_in_gate = true
+        self.output_voltages = state.output_voltages or {0.0, 0.0, 0.0, 0.0}
+        self.voltages_updated = true
 
-        -- Calculate initial chord voltages
-        local initial_notes_close = self.calculate_close_notes(self,
-                                                               self.current_scale_degree,
-                                                               false)
-        local initial_notes_voiced = apply_voicing(initial_notes_close)
-        for i = 1, 4 do
-            self.output_voltages[i] = midi_note_to_volts(
-                                          initial_notes_voiced[i] or 60)
+        -- Calculate initial chord voltages IF NOT loaded from state
+        if not state.output_voltages then
+            local initial_notes_close = self:calculate_close_notes(
+                                            self.current_scale_degree, false)
+            if initial_notes_close then
+                local initial_notes_voiced = apply_voicing(initial_notes_close)
+                for i = 1, 4 do
+                    self.output_voltages[i] = midi_note_to_volts(
+                                                  initial_notes_voiced[i] or 60)
+                end
+            else
+                self.output_voltages = {0.0, 0.0, 0.0, 0.0}
+            end
         end
 
         -- I/O & Parameter Definitions
@@ -246,11 +288,17 @@ return {
                 [4] = "Note 4 (Soprano)"
             },
             parameters = {
-                {"Root Note", 0, 11, 0, kMIDINote},
-                {"Scale", self.scale_names, 1},
-                {"Matrix", self.matrix_names, 1},
-                {"Clock Div", self.clock_division_options, 4},
-                {"Transition", self.transition_options_param, 5}
+                {"Root Note", 0, 11, default_root, kMIDINote},
+                {"Scale", self.scale_names, default_scale_idx},
+                {"Matrix", self.matrix_names, default_matrix_idx},
+                {
+                    "Clock Div", self.clock_division_options,
+                    default_clock_div_idx
+                },
+                {
+                    "Transition", self.transition_options_param,
+                    default_transition_idx
+                }
             }
         }
     end,
@@ -376,116 +424,159 @@ return {
     -- =======================
     gate = function(self, input, rising)
         if input == 1 and rising then -- Clock Input Rising Edge
-            local new_notes_calculated = false
-            local notes_close;
-            local notes_voiced;
+            self.internal_clock_count = self.internal_clock_count + 1
 
-            -- Priority 1: Is a key change armed to start *now*?
-            if self.key_change_armed then
-                -- Trigger Transition Chord Calculation
-                local target_tonic_midi = 60 + self.target_root;
-                local trans_chord_root;
-                -- Determine root of transition chord based on type
-                if self.transition_type == "V7" then
-                    trans_chord_root = target_tonic_midi + 7;
-                elseif self.transition_type == "iv" then
-                    trans_chord_root = target_tonic_midi + 5;
-                elseif self.transition_type == "bVII" then
-                    trans_chord_root = target_tonic_midi + 10;
-                elseif self.transition_type == "dim7" then
-                    trans_chord_root = target_tonic_midi - 1;
-                else
-                    trans_chord_root = target_tonic_midi + 7;
-                    self.transition_type = "V7";
-                end -- Fallback
-                -- Calculate and store voltages
-                notes_close = self.calculate_close_notes(self, trans_chord_root,
-                                                         true); -- true = is transition root MIDI
-                notes_voiced = apply_voicing(notes_close);
-                for i = 1, 4 do
-                    self.output_voltages[i] = midi_note_to_volts(
-                                                  notes_voiced[i] or 60)
-                end
-                -- Update state for next clock
-                self.is_playing_transition_chord = true;
-                self.key_change_armed = false;
-                new_notes_calculated = true;
+            -- Check if clock division met
+            if self.internal_clock_count >= self.clock_division_steps then
+                self.internal_clock_count = 0 -- Reset division counter
 
-                -- Priority 2: Was a transition chord playing? Resolve to new tonic *now*.
-            elseif self.is_playing_transition_chord then
-                -- Resolve Key Change: Calculate new tonic chord
-                self.current_root = self.target_root;
-                self.target_root = nil;
-                self.is_playing_transition_chord = false;
-                self.key_change_armed = false; -- Clear fully
-                self.current_scale_degree = 1;
-                self.clock_step = 0; -- Reset degree and clock step
-                notes_close = self.calculate_close_notes(self,
-                                                         self.current_scale_degree,
-                                                         false); -- false = is diatonic
-                notes_voiced = apply_voicing(notes_close);
-                for i = 1, 4 do
-                    self.output_voltages[i] = midi_note_to_volts(
-                                                  notes_voiced[i] or 60)
-                end
-                new_notes_calculated = true;
+                local new_notes_calculated = false
+                local notes_close;
+                local notes_voiced;
 
-                -- Priority 3: Normal chord clock advancement
-            else
-                self.clock_step = self.clock_step + 1;
-                local chord_change_due = false;
-                if self.clock_step >= self.clock_division_steps then
-                    self.clock_step = 0;
-                    chord_change_due = true;
-                end
+                -- === Handle Key Change Resolution & Transition Start ===
+                if self.is_playing_transition_chord then
+                    -- We WERE playing a transition chord. Resolve it NOW.
+                    self.current_root = self.root_after_transition
+                    self.is_playing_transition_chord = false
+                    self.root_after_transition = nil
+                    self.current_scale_degree = 1 -- Always resolve to I
 
-                if chord_change_due then
-                    -- Normal Markov Step: Calculate next diatonic chord
-                    local scale_len = #self.current_scale_intervals;
-                    if self.current_scale_degree < 1 or
-                        self.current_scale_degree > scale_len then
-                        self.current_scale_degree = 1
+                    -- *** Apply pending scale change BEFORE calculating resolved chord ***
+                    if self.scale_change_pending then
+                        self.current_scale_name =
+                            self.scale_names[self.target_scale_idx]
+                        self.current_scale_intervals =
+                            self.scales[self.current_scale_name]
+                        self.scale_change_pending = false
+                        print(self.name .. ": Scale change applied to " ..
+                                  self.current_scale_name .. " on resolution.")
                     end
-                    local probs_raw =
-                        self.current_matrix[self.current_scale_degree];
-                    local valid_probs = {};
-                    local total_prob = 0;
-                    if probs_raw and scale_len > 0 then
-                        for d, p in pairs(probs_raw) do
-                            if d >= 1 and d <= scale_len then
-                                valid_probs[d] = p;
-                                total_prob = total_prob + p;
-                            end
-                        end
-                    end
-                    if total_prob > 0 and math.abs(total_prob - 1.0) > 0.001 then
-                        for d, p in pairs(valid_probs) do
-                            valid_probs[d] = p / total_prob;
-                        end
-                    end
-                    if next(valid_probs) ~= nil then
-                        self.current_scale_degree = select_next_state(
-                                                        valid_probs);
-                    else
-                        self.current_scale_degree = 1;
-                    end
-                    notes_close = self.calculate_close_notes(self,
-                                                             self.current_scale_degree,
-                                                             false); -- false = is diatonic
-                    notes_voiced = apply_voicing(notes_close);
+
+                    print(self.name .. ": Resolved to new root " ..
+                              self.current_root .. " (Degree I)")
+                    local notes_close = self:calculate_close_notes(
+                                            self.current_scale_degree, false)
+                    local notes_voiced = apply_voicing(notes_close)
                     for i = 1, 4 do
                         self.output_voltages[i] = midi_note_to_volts(
                                                       notes_voiced[i] or 60)
                     end
-                    new_notes_calculated = true;
-                end
-            end
+                    new_notes_calculated = true
+                    self.voltages_updated = true
 
-            -- If voltages were updated in this call, set the flag for step()
-            if new_notes_calculated then
-                self.voltages_updated_in_gate = true
-            end
-        end
+                    -- *** After resolving, check if another key change is already pending ***
+                    if self.key_change_pending then
+                        print(self.name ..
+                                  ": New root change detected immediately after resolving. Starting next transition.")
+                        -- Start the *next* transition immediately on this same clock pulse
+                        local trans_notes_close =
+                            self:calculate_transition_notes() -- Uses self.target_root
+                        if trans_notes_close then
+                            local trans_notes_voiced = apply_voicing(
+                                                           trans_notes_close)
+                            for i = 1, 4 do
+                                self.output_voltages[i] = midi_note_to_volts(
+                                                              trans_notes_voiced[i] or
+                                                                  60)
+                            end
+                            self.is_playing_transition_chord = true
+                            self.root_after_transition = self.target_root -- Store the root we WILL resolve to
+                            self.key_change_pending = false -- Consumed the pending flag
+                            -- Voltages are already marked as updated
+                        else
+                            print(self.name ..
+                                      ": Failed to calculate immediate subsequent transition notes.")
+                            self.is_playing_transition_chord = false
+                            self.key_change_pending = false -- Clear flag anyway
+                            -- Let the code below handle the normal progression
+                            new_notes_calculated = false -- Ensure normal progression runs
+                        end
+                    end -- End immediate re-transition check
+
+                elseif self.key_change_pending then
+                    -- A key change IS pending, start the transition NOW.
+                    -- Scale change is NOT applied before the transition chord itself.
+                    print(self.name ..
+                              ": Playing transition chord for target root " ..
+                              self.target_root)
+                    local trans_notes_close = self:calculate_transition_notes() -- Uses self.target_root
+                    if trans_notes_close then
+                        local trans_notes_voiced = apply_voicing(
+                                                       trans_notes_close)
+                        for i = 1, 4 do
+                            self.output_voltages[i] = midi_note_to_volts(
+                                                          trans_notes_voiced[i] or
+                                                              60)
+                        end
+                        self.is_playing_transition_chord = true -- Flag that we're mid-transition
+                        self.root_after_transition = self.target_root -- Store the root we WILL resolve to
+                        self.key_change_pending = false -- Consumed the pending flag
+                        new_notes_calculated = true
+                        self.voltages_updated = true
+                    else
+                        print(self.name ..
+                                  ": Failed to calculate transition notes.")
+                        self.key_change_pending = false -- Clear flag even if failed
+                        -- Fall through to normal progression if calculation fails
+                    end
+                end
+
+                -- === Normal Chord Progression (Only if no transition logic occurred above) ===
+                if not new_notes_calculated then
+                    -- *** Apply pending scale change BEFORE calculating next chord ***
+                    if self.scale_change_pending then
+                        self.current_scale_name =
+                            self.scale_names[self.target_scale_idx]
+                        self.current_scale_intervals =
+                            self.scales[self.current_scale_name]
+                        self.scale_change_pending = false
+                        print(self.name .. ": Scale change applied to " ..
+                                  self.current_scale_name .. " on next chord.")
+                    end
+
+                    local matrix = self.current_matrix
+                    local scale_len = #self.current_scale_intervals
+                    local probs = matrix[self.current_scale_degree]
+                    if probs and scale_len > 0 then
+                        local valid_probs = {}
+                        local total_prob = 0
+                        for d, p in pairs(probs) do
+                            if d >= 1 and d <= scale_len then
+                                valid_probs[d] = p
+                                total_prob = total_prob + p
+                            end
+                        end
+                        if total_prob > 0 and math.abs(total_prob - 1.0) > 0.001 then
+                            for d, p in pairs(valid_probs) do
+                                valid_probs[d] = p / total_prob
+                            end
+                        end
+                        if next(valid_probs) ~= nil then
+                            self.current_scale_degree = select_next_state(
+                                                            valid_probs)
+                        else
+                            self.current_scale_degree = 1
+                        end
+                        notes_close = self:calculate_close_notes(
+                                          self.current_scale_degree, false)
+                        notes_voiced = apply_voicing(notes_close)
+                        for i = 1, 4 do
+                            self.output_voltages[i] = midi_note_to_volts(
+                                                          notes_voiced[i] or 60)
+                        end
+                        new_notes_calculated = true
+                        self.voltages_updated = true
+                    end
+                end
+
+                -- If voltages were updated in this call, set the flag for step()
+                if new_notes_calculated then
+                    self.voltages_updated = true -- Use consistent flag
+                end
+
+            end -- End clock division check
+        end -- End rising edge check
     end,
 
     -- =======================
@@ -493,21 +584,47 @@ return {
     -- =======================
     trigger = function(self, input)
         if input == 2 then -- Reset Input
-            self.target_root = nil;
-            self.key_change_armed = false;
-            self.is_playing_transition_chord = false;
-            self.current_scale_degree = 1;
-            self.clock_step = 0;
+            print(self.name .. ": Reset received.")
+            -- Reset state to current parameters
+            self.current_root = self.parameters[1] -- Use current param value
+            self.target_root = self.current_root -- Sync target to current
+            self.key_change_pending = false
+            self.is_playing_transition_chord = false
+            self.root_after_transition = nil
+
+            -- Apply pending scale change immediately on reset
+            if self.scale_change_pending then
+                self.current_scale_name =
+                    self.scale_names[self.target_scale_idx]
+                self.current_scale_intervals =
+                    self.scales[self.current_scale_name]
+                self.scale_change_pending = false
+                print(self.name .. ": Scale change applied to " ..
+                          self.current_scale_name .. " on reset.")
+            end
+            -- If no scale change pending, ensure target reflects current
+            self.target_scale_idx = self.parameters[2]
+            self.previous_parameters[2] = self.target_scale_idx
+
+            self.current_scale_degree = 1
+            self.internal_clock_count = 0 -- Reset clock division counter
+
+            -- Sync previous params to current param values
+            self.previous_parameters[1] = self.target_root
+            self.previous_parameters[3] = self.parameters[3]
+            self.previous_parameters[4] = self.parameters[4]
+            self.previous_parameters[5] = self.parameters[5]
+
             -- Calculate tonic chord voltages and store immediately
-            local notes_close = self.calculate_close_notes(self,
-                                                           self.current_scale_degree,
-                                                           false)
+            -- FIX: Use colon notation for method call
+            local notes_close = self:calculate_close_notes(
+                                    self.current_scale_degree, false)
             local notes_voiced = apply_voicing(notes_close)
             for i = 1, 4 do
                 self.output_voltages[i] =
                     midi_note_to_volts(notes_voiced[i] or 60)
             end
-            self.voltages_updated_in_gate = true
+            self.voltages_updated = true -- Mark for output in step
         end
     end,
 
@@ -515,69 +632,55 @@ return {
     -- Step Function - Minimal work: Parameter check & return cached voltages
     -- =======================
     step = function(self, dt, inputs)
-        -- === Check for Parameter Changes (Update state, ARM key changes) ===
-        local param_changed = false;
-        local current_root_param = self.parameters[1];
-        if current_root_param ~= self.previous_parameters[1] then
-            if self.target_root == nil and not self.key_change_armed and
-                not self.is_playing_transition_chord then
-                self.target_root = current_root_param;
-                local trans_idx = self.parameters[5];
-                local sel_trans = self.transition_options_param[trans_idx];
-                if sel_trans == "Random" then
-                    local rand_idx = math.random(#self.transition_options);
-                    self.transition_type = self.transition_options[rand_idx];
-                else
-                    self.transition_type = sel_trans;
-                end
-                self.key_change_armed = true;
+        -- Check Parameters
+        local root_param = self.parameters[1]
+        local scale_param_idx = self.parameters[2]
+        local matrix_param_idx = self.parameters[3]
+        local clock_div_param_idx = self.parameters[4]
+        local transition_param_idx = self.parameters[5]
+
+        -- Update target_root immediately and flag if change occurred
+        if root_param ~= self.target_root then
+            local old_target = self.target_root
+            self.target_root = root_param
+            if not self.is_playing_transition_chord then
+                self.key_change_pending = true
             end
-            self.previous_parameters[1] = current_root_param;
-            param_changed = true;
-        end
-        local current_scale_idx = self.parameters[2];
-        if current_scale_idx ~= self.previous_parameters[2] then
-            self.current_scale_name = self.scale_names[current_scale_idx];
-            self.current_scale_intervals = self.scales[self.current_scale_name];
-            if self.target_root == nil and self.current_scale_degree >
-                #self.current_scale_intervals then
-                self.current_scale_degree = 1
-            end
-            self.previous_parameters[2] = current_scale_idx;
-            param_changed = true;
-        end -- Note: Chord won't update until next clock trigger if change occurs mid-transition
-        local current_matrix_idx = self.parameters[3];
-        if current_matrix_idx ~= self.previous_parameters[3] then
-            self.current_matrix_name = self.matrix_names[current_matrix_idx];
-            self.current_matrix = self.matrices[self.current_matrix_name];
-            self.previous_parameters[3] = current_matrix_idx;
-            param_changed = true;
-        end
-        local current_clock_div_idx = self.parameters[4];
-        if current_clock_div_idx ~= self.previous_parameters[4] then
-            local idx = current_clock_div_idx;
-            if idx and idx >= 1 and idx <= #self.clock_division_values then
-                self.clock_division_steps = self.clock_division_values[idx];
-            else
-                self.clock_division_steps = self.clock_division_values[4];
-            end
-            self.clock_step = 0;
-            self.previous_parameters[4] = current_clock_div_idx;
-            param_changed = true;
-        end
-        local current_transition_idx = self.parameters[5];
-        if current_transition_idx ~= self.previous_parameters[5] then
-            self.previous_parameters[5] = current_transition_idx;
-            param_changed = true;
-            if self.transition_options_param[current_transition_idx] ~= "Random" then
-                self.transition_type =
-                    self.transition_options_param[current_transition_idx];
-            end
+            self.previous_parameters[1] = self.target_root
         end
 
-        -- === Output Logic ===
-        if self.voltages_updated_in_gate then
-            self.voltages_updated_in_gate = false;
+        -- Handle scale change (flag pending)
+        if scale_param_idx ~= self.target_scale_idx then
+            self.target_scale_idx = scale_param_idx
+            self.scale_change_pending = true
+            self.previous_parameters[2] = self.target_scale_idx
+        end
+
+        -- Handle matrix change (update immediately)
+        if matrix_param_idx ~= self.previous_parameters[3] then
+            self.current_matrix_name = self.matrix_names[matrix_param_idx]
+            self.current_matrix = self.matrices[self.current_matrix_name]
+            self.previous_parameters[3] = matrix_param_idx
+        end
+
+        -- Handle clock div change (update immediately)
+        if clock_div_param_idx ~= self.previous_parameters[4] then
+            self.clock_division_steps =
+                self.clock_division_values[clock_div_param_idx]
+            self.internal_clock_count = 0
+            self.previous_parameters[4] = clock_div_param_idx
+        end
+
+        -- Handle transition type change (update immediately)
+        if transition_param_idx ~= self.previous_parameters[5] then
+            self.transition_type =
+                self.transition_options_param[transition_param_idx]
+            self.previous_parameters[5] = transition_param_idx
+        end
+
+        -- Output Logic: Return cached voltages if they were updated
+        if self.voltages_updated then
+            self.voltages_updated = false;
             return self.output_voltages
         else
             return nil
@@ -587,9 +690,9 @@ return {
     -- Draw Function (Updated display logic for faster transitions)
     draw = function(self)
         local root_name = note_names[self.current_root + 1];
-        local scale_name = self.current_scale_name;
-        local matrix_name = self.current_matrix_name;
-        local degree = self.current_scale_degree;
+        local scale_name = self.current_scale_name or "?? Scale";
+        local matrix_name = self.current_matrix_name or "?? Matrix";
+        local degree = self.current_scale_degree or 1;
         local chord_notes_volts = self.output_voltages;
         local y = 18;
         local x = 10;
@@ -606,47 +709,53 @@ return {
             [7] = "VII"
         };
         local deg_rom = roman_map[degree] or tostring(degree);
-        if self.key_change_armed then
-            root_display = root_name .. " Arm>" ..
-                               note_names[self.target_root + 1];
-            degree_display = deg_rom .. " (Next)"; -- Changed display
-        elseif self.is_playing_transition_chord then
-            root_display = root_name .. " >" .. note_names[self.target_root + 1];
+
+        -- Display logic based on transition state
+        if self.is_playing_transition_chord and self.root_after_transition ~=
+            nil then
+            root_display = root_name .. " >" ..
+                               note_names[self.root_after_transition + 1];
             local tt = self.transition_type;
             if tt == "V7" then
-                degree_display = "V7/" .. roman_map[1]
+                degree_display = "V7/I"
             elseif tt == "iv" then
-                degree_display = "iv/" .. roman_map[1]
+                degree_display = "iv/I"
             elseif tt == "bVII" then
-                degree_display = "bVII/" .. roman_map[1]
+                degree_display = "bVII/I"
             elseif tt == "dim7" then
-                degree_display = "vii°7/" .. roman_map[1]
+                degree_display = "vii°7/I"
             else
-                degree_display = "?/" .. roman_map[1]
+                degree_display = "?/I"
             end
+        elseif self.key_change_pending then
+            root_display = root_name .. " (->" ..
+                               note_names[self.target_root + 1] .. ")";
+            degree_display = deg_rom .. " (Pending Key)";
         else
             degree_display = deg_rom
         end
-        drawText(x, y, "Root: " .. root_display .. " Scale: " .. scale_name);
-        y = y + lh;
-        local clk_idx = self.parameters[4];
-        local clk_txt = "???";
-        if clk_idx and type(clk_idx) == "number" and clk_idx >= 1 and clk_idx <=
-            #self.clock_division_options then
-            clk_txt = self.clock_division_options[clk_idx];
-        else
-            local def_idx = 4;
-            if def_idx >= 1 and def_idx <= #self.clock_division_options then
-                clk_txt = self.clock_division_options[def_idx] .. "?";
-            end
+
+        -- Display scale transition state
+        local scale_display = scale_name
+        if self.scale_change_pending then
+            scale_display = scale_name .. " (->" ..
+                                (self.scale_names[self.target_scale_idx] or "?") ..
+                                ")"
         end
-        local trans_idx = self.parameters[5];
-        local trans_txt = self.transition_options_param[trans_idx] or "???";
+
+        drawText(x, y, "Root: " .. root_display .. " Scale: " .. scale_display);
+        y = y + lh;
+
+        -- Clock Div and Transition Type Display (Simplified)
+        local clk_txt = self.clock_division_options[self.parameters[4]] or "???"
+        local trans_txt = self.transition_options_param[self.parameters[5]] or
+                              "???"
         drawText(x, y, "Matrix: " .. matrix_name .. " Div: 1/" .. clk_txt ..
                      " Tr: " .. trans_txt);
         y = y + lh;
         drawText(x, y, "Degree: " .. degree_display);
-        y = y + lh + 2; -- Removed master clock display
+        y = y + lh + 2;
+
         drawText(x, y, "Chord:");
         if chord_notes_volts then
             local notes_to_draw = {};
@@ -660,6 +769,36 @@ return {
         else
             drawText(x + 50, y, "...", 10);
         end
-        return false;
+        return false; -- Show default param line
+    end,
+
+    serialise = function(self)
+        local state = {
+            -- Core state
+            current_root = self.current_root,
+            target_root = self.target_root,
+            scale_index = self.target_scale_idx,
+            matrix_index = self.previous_parameters[3],
+            current_scale_degree = self.current_scale_degree,
+
+            -- Key Change State
+            key_change_pending = self.key_change_pending,
+            is_playing_transition_chord = self.is_playing_transition_chord,
+            root_after_transition = self.root_after_transition,
+
+            -- Scale Change State
+            scale_change_pending = self.scale_change_pending,
+
+            -- Clock Div State
+            clock_division_index = self.previous_parameters[4],
+            internal_clock_count = self.internal_clock_count,
+
+            -- Transition Type State
+            transition_index = self.previous_parameters[5],
+
+            -- Output State
+            output_voltages = self.output_voltages
+        }
+        return state
     end
 } -- End of main returned table

@@ -1,5 +1,5 @@
+-- Markov Chord Seq v1.18
 --[[
-Markov Chord Seq v1.17
 Generates 4-note (7th) chord progressions using Markov chains.
 Key changes trigger transition chord on NEXT clock pulse, resolve on subsequent clock.
 Moved chord/voltage calculations out of step() into gate()/trigger().
@@ -9,12 +9,6 @@ Uses kGate Clock (Input 1) and kTrigger Reset (Input 2).
 Scales: Major, Nat Minor, Harm Minor, Dorian, Phrygian, Phrygian Dom, etc.
 Matrices: Standard, Resolving, Wandering, Ambient, Minimal Cycle, etc.
 Transitions: V7, iv, bVII, dim7, Random
-
-Changes in v1.17:
-- Fixed nil reference errors in init(), step(), and setupUi().
-- Made inversion_options part of self.
-- Added safety checks for parameter handling in step() and setupUi().
-- Ensured setupUi() correctly uses lengths of self tables.
 ]] -- Helper function: MIDI note to V/Oct
 local function midi_note_to_volts(note) return (note - 60.0) / 12.0 end
 
@@ -1415,3 +1409,4 @@ return {
         return state
     end
 } -- End of main returned table
+

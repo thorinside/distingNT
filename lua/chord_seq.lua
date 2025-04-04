@@ -390,9 +390,12 @@ return {
 
         -- Gate Gap Options
         self.gate_gap_options = {
-            "0ms", "10ms", "25ms", "50ms", "100ms", "250ms", "500ms"
+            "0ms", "1ms", "2ms", "10ms", "25ms", "50ms", "100ms", "250ms",
+            "500ms"
         }
-        self.gate_gap_values = {0.0, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5} -- seconds
+        self.gate_gap_values = {
+            0.0, 0.001, 0.002, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5
+        } -- seconds
 
         -- Parameter Defaults
         local default_root = 0
@@ -401,7 +404,7 @@ return {
         local default_clock_div_idx = 4 -- Index for "4"
         local default_transition_idx = 5 -- Index for "Random"
         local default_inversion_idx = 1 -- Index for "Root"
-        local default_gate_gap_idx = 2 -- Index for "10ms"
+        local default_gate_gap_idx = 4 -- Index for "10ms" (updated index)
 
         -- Load or Set Parameter INDICES from state or defaults
         local loaded_root =
@@ -533,7 +536,7 @@ return {
                     "Transition", self.transition_options_param,
                     loaded_transition_idx
                 }, {"Inversion", self.inversion_options, loaded_inversion_idx},
-                {"Gate Gap", self.gate_gap_options, loaded_gate_gap_idx} -- Added Gate Gap Param
+                {"Gate Gap", self.gate_gap_options, loaded_gate_gap_idx} -- Use updated options
             }
         }
     end,
@@ -1068,7 +1071,10 @@ return {
         -- Check if the *next* clock pulse triggers a chord change and start gap if needed
         if self.gate_gap_duration > 0 and self.internal_clock_count ==
             self.clock_division_steps - 1 then
-            self.gap_timer_remaining = self.gate_gap_duration
+            -- Only start the timer if it's not already running
+            if self.gap_timer_remaining <= 0 then
+                self.gap_timer_remaining = self.gate_gap_duration
+            end
         end
 
         -- Determine output gate value based on timer
@@ -1275,7 +1281,7 @@ return {
         local prev_inversion_idx = (self and self.previous_parameters and
                                        self.previous_parameters[6]) or 1
         local prev_gate_gap_idx = (self and self.previous_parameters and
-                                      self.previous_parameters[7]) or 2 -- Default to 10ms index
+                                      self.previous_parameters[7]) or 4 -- Default to 10ms index (updated)
 
         local state = {
             script_version = self.SCRIPT_VERSION, -- Save current version

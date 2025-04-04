@@ -397,6 +397,10 @@ return {
             0.0, 0.001, 0.002, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5
         } -- seconds
 
+        -- Octave Shift Options
+        self.octave_shift_options = {"-2", "-1", "0", "+1", "+2"}
+        self.octave_shift_values = {-24, -12, 0, 12, 24} -- semitones
+
         -- Parameter Defaults
         local default_root = 0
         local default_scale_idx = 1
@@ -405,6 +409,7 @@ return {
         local default_transition_idx = 5 -- Index for "Random"
         local default_inversion_idx = 1 -- Index for "Root"
         local default_gate_gap_idx = 4 -- Index for "10ms" (updated index)
+        local default_octave_shift_idx = 3 -- Index for "0"
 
         -- Load or Set Parameter INDICES from state or defaults
         local loaded_root =
@@ -418,6 +423,8 @@ return {
         local loaded_inversion_idx = state.inversion_index or
                                          default_inversion_idx
         local loaded_gate_gap_idx = state.gate_gap_index or default_gate_gap_idx
+        local loaded_octave_shift_idx = state.octave_shift_index or
+                                            default_octave_shift_idx
 
         -- Validate loaded indices against current definitions
         if loaded_scale_idx < 1 or loaded_scale_idx > #self.scale_names then
@@ -442,6 +449,10 @@ return {
         if loaded_gate_gap_idx < 1 or loaded_gate_gap_idx >
             #self.gate_gap_values then
             loaded_gate_gap_idx = default_gate_gap_idx
+        end
+        if loaded_octave_shift_idx < 1 or loaded_octave_shift_idx >
+            #self.octave_shift_values then
+            loaded_octave_shift_idx = default_octave_shift_idx
         end
         if type(loaded_root) ~= "number" or loaded_root < 0 or loaded_root > 11 then
             loaded_root = default_root
@@ -472,6 +483,8 @@ return {
         self.transition_type =
             self.transition_options_param[loaded_transition_idx]
         self.gate_gap_duration = self.gate_gap_values[loaded_gate_gap_idx] -- Store duration in seconds
+        self.octave_shift_semitones =
+            self.octave_shift_values[loaded_octave_shift_idx] -- Store shift in semitones
 
         -- Initialize Previous Parameter Tracker
         self.previous_parameters = {
@@ -481,7 +494,8 @@ return {
             [4] = loaded_clock_div_idx,
             [5] = loaded_transition_idx,
             [6] = loaded_inversion_idx,
-            [7] = loaded_gate_gap_idx -- Track gate gap index
+            [7] = loaded_gate_gap_idx,
+            [8] = loaded_octave_shift_idx -- Track octave shift index
         }
 
         -- Initialize Outputs & Gate State
@@ -536,7 +550,11 @@ return {
                     "Transition", self.transition_options_param,
                     loaded_transition_idx
                 }, {"Inversion", self.inversion_options, loaded_inversion_idx},
-                {"Gate Gap", self.gate_gap_options, loaded_gate_gap_idx} -- Use updated options
+                {"Gate Gap", self.gate_gap_options, loaded_gate_gap_idx},
+                {
+                    "Octave Shift", self.octave_shift_options,
+                    loaded_octave_shift_idx
+                } -- Added Octave Shift Param
             }
         }
     end,
@@ -548,79 +566,128 @@ return {
 
         if is_transition_chord_root then
             local chord_root_midi = degree_or_root_midi
+            local octave_shift = self.octave_shift_semitones or 0 -- Get octave shift
             local tt = self.transition_type -- Use local copy for checks
             if tt == "V7" then
                 base_midi = chord_root_midi -- Root of the V7 chord
                 chord_tones = {
-                    base_midi + 0, base_midi + 4, base_midi + 7, base_midi + 10
+                    base_midi + 0 + octave_shift, base_midi + 4 + octave_shift,
+                    base_midi + 7 + octave_shift, base_midi + 10 + octave_shift
                 }
             elseif tt == "iv" then
                 base_midi = chord_root_midi -- Root of the iv chord
                 chord_tones = {
-                    base_midi + 0, base_midi + 3, base_midi + 7, base_midi + 10
+                    base_midi + 0 + octave_shift, base_midi + 3 + octave_shift,
+                    base_midi + 7 + octave_shift, base_midi + 10 + octave_shift
                 } -- Minor 7th
             elseif tt == "bVII" then
                 base_midi = chord_root_midi -- Root of the bVII chord
                 chord_tones = {
-                    base_midi + 0, base_midi + 4, base_midi + 7, base_midi + 10
+                    base_midi + 0 + octave_shift, base_midi + 4 + octave_shift,
+                    base_midi + 7 + octave_shift, base_midi + 10 + octave_shift
                 } -- Dominant 7th (common function)
             elseif tt == "dim7" then
                 base_midi = chord_root_midi -- Root of the dim7 chord
                 chord_tones = {
-                    base_midi + 0, base_midi + 3, base_midi + 6, base_midi + 9
+                    base_midi + 0 + octave_shift, base_midi + 3 + octave_shift,
+                    base_midi + 6 + octave_shift, base_midi + 9 + octave_shift
                 }
             else -- Fallback V7 (could happen if transition_type is Random initially)
                 base_midi = chord_root_midi
                 chord_tones = {
-                    base_midi + 0, base_midi + 4, base_midi + 7, base_midi + 10
+                    base_midi + 0 + octave_shift, base_midi + 4 + octave_shift,
+                    base_midi + 7 + octave_shift, base_midi + 10 + octave_shift
                 }
             end
-        else -- Calculate diatonic 7th chord tones
+        else -- Calculate diatonic chord tones
             local degree = degree_or_root_midi;
             local scale = self.current_scale_intervals;
             local scale_len = #scale;
-            if scale_len == 0 then return {60, 64, 67, 71} end -- Fallback Cmaj7
+            local octave_shift = self.octave_shift_semitones or 0 -- Get octave shift, default 0
+
+            if scale_len == 0 then
+                -- Apply octave shift to fallback chord
+                return {
+                    60 + octave_shift, 64 + octave_shift, 67 + octave_shift,
+                    71 + octave_shift
+                }
+            end
             if degree < 1 or degree > scale_len then degree = 1 end
 
-            local notes = {}
-            local base_note = self.current_root + scale[degree] -- Root note of the chord in the scale
-            local base_midi = 60 + base_note -- Base MIDI near C4
+            -- Get the MIDI note for the root of the chord based on the scale degree
+            local root_note_in_scale = self.current_root + scale[degree]
+            local base_midi = 60 + root_note_in_scale + octave_shift -- Apply Octave Shift HERE
 
-            -- Calculate intervals relative to the degree's note in the scale
-            for i = 1, 4 do
-                local scale_idx = ((degree - 1) + (i - 1) * 2) % scale_len + 1
-                local octave_offset = math.floor(
-                                          ((degree - 1) + (i - 1) * 2) /
-                                              scale_len)
-                local interval = scale[scale_idx] - scale[degree] -- Interval relative to chord root
-                -- Adjust interval if it crosses octave boundary relative to scale root
-                if scale[scale_idx] < scale[degree] then
-                    interval = interval + 12
+            if scale_len < 7 then
+                -- Handle scales with fewer than 7 notes (e.g., Pentatonic, Hexatonic)
+                -- Build Root, 3rd, 5th using scale wrapping, and double the Root.
+                local third_idx = ((degree - 1) + 2) % scale_len + 1
+                local fifth_idx = ((degree - 1) + 4) % scale_len + 1
+
+                local third_interval = scale[third_idx] - scale[degree]
+                if scale[third_idx] < scale[degree] then
+                    third_interval = third_interval + 12
                 end
-                chord_tones[i] = base_midi + interval + octave_offset * 12
-            end
 
-            -- Reorder based on interval size for {Root, 3rd, 5th, 7th} structure (approx)
-            local root_midi = chord_tones[1]
-            local third_midi = chord_tones[2]
-            local fifth_midi = chord_tones[3]
-            local seventh_midi = chord_tones[4]
+                local fifth_interval = scale[fifth_idx] - scale[degree]
+                if scale[fifth_idx] < scale[degree] then
+                    fifth_interval = fifth_interval + 12
+                end
 
-            -- Basic check: Ensure 3rd, 5th, 7th are higher than root (adjust octave if necessary)
-            while third_midi < root_midi do
-                third_midi = third_midi + 12
-            end
-            while fifth_midi < third_midi do
-                fifth_midi = fifth_midi + 12
-            end
-            while seventh_midi < fifth_midi do
-                seventh_midi = seventh_midi + 12
-            end
+                local root_midi = base_midi
+                local third_midi = base_midi + third_interval
+                local fifth_midi = base_midi + fifth_interval
 
-            chord_tones = {root_midi, third_midi, fifth_midi, seventh_midi}
+                -- Ensure 3rd and 5th are higher than root (adjust octave if necessary)
+                while third_midi < root_midi do
+                    third_midi = third_midi + 12
+                end
+                while fifth_midi < third_midi do
+                    fifth_midi = fifth_midi + 12
+                end -- Check against 3rd now
 
+                chord_tones = {root_midi, third_midi, fifth_midi, root_midi} -- Double the root
+
+            else
+                -- Original logic for scales with 7 or more notes (calculate 7th chord)
+                local notes = {}
+                -- Calculate intervals relative to the degree's note in the scale
+                for i = 1, 4 do
+                    local scale_idx = ((degree - 1) + (i - 1) * 2) % scale_len +
+                                          1
+                    local octave_offset = math.floor(
+                                              ((degree - 1) + (i - 1) * 2) /
+                                                  scale_len)
+                    local interval = scale[scale_idx] - scale[degree] -- Interval relative to chord root
+                    -- Adjust interval if it crosses octave boundary relative to scale root
+                    if scale[scale_idx] < scale[degree] then
+                        interval = interval + 12
+                    end
+                    -- Note: base_midi already includes octave shift
+                    notes[i] = base_midi + interval + octave_offset * 12
+                end
+
+                -- Reorder based on interval size for {Root, 3rd, 5th, 7th} structure (approx)
+                local root_midi = notes[1]
+                local third_midi = notes[2]
+                local fifth_midi = notes[3]
+                local seventh_midi = notes[4]
+
+                -- Basic check: Ensure 3rd, 5th, 7th are higher than root (adjust octave if necessary)
+                while third_midi < root_midi do
+                    third_midi = third_midi + 12
+                end
+                while fifth_midi < third_midi do
+                    fifth_midi = fifth_midi + 12
+                end
+                while seventh_midi < fifth_midi do
+                    seventh_midi = seventh_midi + 12
+                end
+
+                chord_tones = {root_midi, third_midi, fifth_midi, seventh_midi}
+            end
         end
-        return chord_tones -- Returns {Root, 3rd, 5th, 7th} MIDI notes (unvoiced)
+        return chord_tones -- Returns {Root, 3rd, 5th, 7th or Root} MIDI notes (unvoiced)
     end,
 
     gate = function(self, input, rising)
@@ -934,6 +1001,7 @@ return {
                 self.previous_parameters[5] = self.parameters[5]
                 self.previous_parameters[6] = self.parameters[6] -- Sync inversion param
                 self.previous_parameters[7] = self.parameters[7] -- Sync gate gap index
+                self.previous_parameters[8] = self.parameters[8] -- Sync octave shift index
             end
 
             -- Calculate tonic chord voltages and store immediately
@@ -963,6 +1031,7 @@ return {
         local transition_param_idx = self.parameters[5]
         local inversion_param_idx = self.parameters[6]
         local gate_gap_param_idx = self.parameters[7]
+        local octave_shift_param_idx = self.parameters[8]
 
         -- Safety check for previous_parameters table existence
         local prev_params_exist = (self.previous_parameters ~= nil)
@@ -1057,6 +1126,21 @@ return {
                 self.gate_gap_duration =
                     self.gate_gap_values[gate_gap_param_idx]
                 self.previous_parameters[7] = gate_gap_param_idx
+            end
+        end
+
+        -- Handle Octave Shift change (Param 8) - Update immediately
+        if prev_params_exist and octave_shift_param_idx ~= nil and
+            octave_shift_param_idx ~= self.previous_parameters[8] then
+            -- Validate index before using
+            if octave_shift_param_idx >= 1 and octave_shift_param_idx <=
+                #self.octave_shift_values then
+                self.octave_shift_semitones =
+                    self.octave_shift_values[octave_shift_param_idx]
+                self.previous_parameters[8] = octave_shift_param_idx
+                -- Trigger recalculation on octave change? Might be good for smoothness.
+                -- If so, need to call the chord calculation/voicing here...
+                -- NOTE: For simplicity, we'll let the next clock/trigger handle the actual note update.
             end
         end
 
@@ -1282,6 +1366,8 @@ return {
                                        self.previous_parameters[6]) or 1
         local prev_gate_gap_idx = (self and self.previous_parameters and
                                       self.previous_parameters[7]) or 4 -- Default to 10ms index (updated)
+        local prev_octave_shift_idx = (self and self.previous_parameters and
+                                          self.previous_parameters[8]) or 3 -- Default to 0 index
 
         local state = {
             script_version = self.SCRIPT_VERSION, -- Save current version
@@ -1311,6 +1397,9 @@ return {
 
             -- Gate Gap State (save last known param 7 value)
             gate_gap_index = prev_gate_gap_idx,
+
+            -- Octave Shift State (save last known param 8 value)
+            octave_shift_index = prev_octave_shift_idx,
 
             -- Output State
             output_voltages = self.output_voltages,

@@ -245,7 +245,7 @@ return {
                 [6] = {[2] = 0.7, [5] = 0.3},
                 [7] = {[1] = 0.6, [4] = 0.4}
             },
-            ["Static Drone"] = {
+            ["Static Drone"] = { -- Unchanged
                 [1] = {
                     [1] = 0.8,
                     [4] = 0.05,
@@ -260,111 +260,117 @@ return {
                 [6] = {[1] = 0.9, [6] = 0.1},
                 [7] = {[1] = 0.9, [7] = 0.1}
             },
-            ["Berlin"] = { -- Based on Minor Key (i, ii°, III, iv, v, VI, VII) tendencies
-                [1] = {[1] = 0.3, [4] = 0.3, [6] = 0.2, [7] = 0.15, [5] = 0.05}, -- i -> i, iv, VI, VII (v less likely)
-                [2] = {[5] = 0.6, [7] = 0.3, [1] = 0.1}, -- ii° -> v, VII (i less likely)
-                [3] = {[6] = 0.5, [4] = 0.3, [1] = 0.1, [7] = 0.1}, -- III -> VI, iv (i, VII less likely)
-                [4] = {[1] = 0.4, [7] = 0.3, [5] = 0.2, [6] = 0.1}, -- iv -> i, VII, v (VI less likely)
-                [5] = {[1] = 0.5, [6] = 0.3, [4] = 0.1, [7] = 0.1}, -- v -> i, VI (iv, VII less likely)
-                [6] = {[7] = 0.4, [4] = 0.2, [5] = 0.2, [1] = 0.1, [3] = 0.1}, -- VI -> VII, iv, v (i, III less likely)
-                [7] = {[1] = 0.5, [3] = 0.3, [6] = 0.1, [4] = 0.1} -- VII -> i, III (VI, iv less likely)
+            ["Berlin"] = { -- REFINED: More i/iv drone, less v
+                [1] = {[1] = 0.4, [4] = 0.3, [6] = 0.15, [7] = 0.1, [3] = 0.05}, -- i -> i, iv, VI, VII, III (v rare)
+                [2] = {[5] = 0.5, [7] = 0.3, [1] = 0.2}, -- ii° -> v, VII, i
+                [3] = {[6] = 0.5, [4] = 0.4, [1] = 0.1}, -- III -> VI, iv, i
+                [4] = {[4] = 0.3, [1] = 0.4, [7] = 0.2, [6] = 0.1}, -- iv -> iv, i, VII, VI
+                [5] = {[1] = 0.7, [6] = 0.2, [4] = 0.1}, -- v -> i (reluctantly), VI, iv
+                [6] = {[1] = 0.3, [7] = 0.3, [4] = 0.2, [3] = 0.1, [6] = 0.1}, -- VI -> i, VII, iv, III, VI
+                [7] = {[1] = 0.5, [6] = 0.3, [4] = 0.1, [7] = 0.1} -- VII -> i, VI, iv, VII
             },
-            ["Trance Minor"] = { -- Focus on i, VI, VII, iv (Natural Minor feel)
-                [1] = {[6] = 0.35, [7] = 0.3, [4] = 0.2, [1] = 0.15}, -- i -> VI, VII, iv, i
-                [2] = {[5] = 0.7, [7] = 0.3}, -- ii° -> v, VII (Less common start)
-                [3] = {[6] = 0.6, [7] = 0.4}, -- III -> VI, VII (Less common start)
-                [4] = {[7] = 0.4, [1] = 0.4, [5] = 0.2}, -- iv -> VII, i, v
-                [5] = {[1] = 0.6, [6] = 0.4}, -- v -> i, VI
-                [6] = {[7] = 0.5, [3] = 0.3, [1] = 0.2}, -- VI -> VII, III, i
-                [7] = {[1] = 0.5, [6] = 0.3, [4] = 0.2} -- VII -> i, VI, iv
+            ["Trance Minor"] = { -- REFINED: Stronger common loops i-VI-VII, i-iv-VII
+                [1] = {[6] = 0.4, [4] = 0.3, [7] = 0.2, [1] = 0.1}, -- i -> VI, iv, VII, i
+                [2] = {[5] = 0.7, [7] = 0.3}, -- ii° -> v, VII
+                [3] = {[6] = 0.7, [1] = 0.3}, -- III -> VI, i (less common path)
+                [4] = {[7] = 0.5, [1] = 0.3, [5] = 0.2}, -- iv -> VII, i, v
+                [5] = {[1] = 0.7, [6] = 0.3}, -- v -> i, VI
+                [6] = {[7] = 0.6, [1] = 0.2, [3] = 0.2}, -- VI -> VII, i, III
+                [7] = {[1] = 0.6, [4] = 0.3, [6] = 0.1} -- VII -> i, iv, VI
             },
-            ["Psy Minor"] = { -- Heavy tonic focus, brief excursions to iv/VII
-                [1] = {[1] = 0.8, [4] = 0.1, [7] = 0.1}, -- i -> i (mostly), iv, VII
-                [2] = {[1] = 1.0}, -- ii° -> i (rarely reached)
-                [3] = {[1] = 1.0}, -- III -> i (rarely reached)
-                [4] = {[1] = 0.9, [4] = 0.1}, -- iv -> i (mostly), iv
-                [5] = {[1] = 1.0}, -- v -> i (rarely reached)
-                [6] = {[1] = 1.0}, -- VI -> i (rarely reached)
-                [7] = {[1] = 0.9, [7] = 0.1} -- VII -> i (mostly), VII
+            ["Psy Minor"] = { -- REFINED: Even stronger i focus
+                [1] = {[1] = 0.9, [4] = 0.05, [7] = 0.05}, -- i -> i (overwhelmingly), iv, VII
+                [2] = {[1] = 1.0}, -- ii° -> i
+                [3] = {[1] = 1.0}, -- III -> i
+                [4] = {[1] = 0.95, [4] = 0.05}, -- iv -> i (mostly), iv
+                [5] = {[1] = 1.0}, -- v -> i
+                [6] = {[1] = 1.0}, -- VI -> i
+                [7] = {[1] = 0.95, [7] = 0.05} -- VII -> i (mostly), VII
             },
-            ["Trance Major"] = { -- Focus on I, IV, V, vi (Major feel)
-                [1] = {[4] = 0.3, [5] = 0.3, [6] = 0.25, [1] = 0.15}, -- I -> IV, V, vi, I
-                [2] = {[5] = 0.7, [4] = 0.3}, -- ii -> V, IV
-                [3] = {[6] = 0.6, [4] = 0.4}, -- iii -> vi, IV (Less common start)
-                [4] = {[1] = 0.4, [5] = 0.4, [2] = 0.2}, -- IV -> I, V, ii
-                [5] = {[1] = 0.5, [6] = 0.4, [4] = 0.1}, -- V -> I, vi, IV
-                [6] = {[2] = 0.4, [4] = 0.3, [5] = 0.3}, -- vi -> ii, IV, V
-                [7] = {[1] = 0.8, [5] = 0.2} -- vii° -> I, V (Less common start)
+            ["Trance Major"] = { -- REFINED: Stronger I-IV-V-I, I-vi-IV-V loops
+                [1] = {[4] = 0.35, [6] = 0.3, [5] = 0.2, [1] = 0.15}, -- I -> IV, vi, V, I
+                [2] = {[5] = 0.8, [4] = 0.2}, -- ii -> V, IV
+                [3] = {[6] = 0.7, [4] = 0.3}, -- iii -> vi, IV
+                [4] = {[5] = 0.5, [1] = 0.3, [2] = 0.2}, -- IV -> V, I, ii
+                [5] = {[1] = 0.6, [6] = 0.3, [4] = 0.1}, -- V -> I, vi, IV
+                [6] = {[4] = 0.4, [5] = 0.3, [2] = 0.3}, -- vi -> IV, V, ii
+                [7] = {[1] = 0.7, [5] = 0.3} -- vii° -> I, V
             },
-            ["Psy Major"] = { -- Heavy tonic focus, brief excursions to IV/V
-                [1] = {[1] = 0.8, [4] = 0.1, [5] = 0.1}, -- I -> I (mostly), IV, V
-                [2] = {[1] = 1.0}, -- ii -> I (rarely reached)
-                [3] = {[1] = 1.0}, -- iii -> I (rarely reached)
-                [4] = {[1] = 0.9, [4] = 0.1}, -- IV -> I (mostly), IV
-                [5] = {[1] = 0.9, [5] = 0.1}, -- V -> I (mostly), V
-                [6] = {[1] = 1.0}, -- vi -> I (rarely reached)
-                [7] = {[1] = 1.0} -- vii° -> I (rarely reached)
+            ["Psy Major"] = { -- REFINED: Even stronger I focus
+                [1] = {[1] = 0.9, [4] = 0.05, [5] = 0.05}, -- I -> I (overwhelmingly), IV, V
+                [2] = {[1] = 1.0}, -- ii -> I
+                [3] = {[1] = 1.0}, -- iii -> I
+                [4] = {[1] = 0.95, [4] = 0.05}, -- IV -> I (mostly), IV
+                [5] = {[1] = 0.95, [5] = 0.05}, -- V -> I (mostly), V
+                [6] = {[1] = 1.0}, -- vi -> I
+                [7] = {[1] = 1.0} -- vii° -> I
             },
-            ["Berlin Major"] = { -- Analogous to Berlin Minor, but Major key centers (I, ii, iii, IV, V, vi, vii°)
-                [1] = {[1] = 0.3, [4] = 0.3, [6] = 0.2, [2] = 0.15, [5] = 0.05}, -- I -> I, IV, vi, ii (V less likely)
-                [2] = {[5] = 0.6, [4] = 0.3, [1] = 0.1}, -- ii -> V, IV (I less likely)
-                [3] = {[6] = 0.5, [4] = 0.3, [1] = 0.1, [5] = 0.1}, -- iii -> vi, IV (I, V less likely)
-                [4] = {[1] = 0.4, [5] = 0.3, [2] = 0.2, [6] = 0.1}, -- IV -> I, V, ii (vi less likely)
-                [5] = {[1] = 0.5, [6] = 0.3, [4] = 0.1, [2] = 0.1}, -- V -> I, vi (IV, ii less likely)
-                [6] = {[2] = 0.4, [4] = 0.2, [5] = 0.2, [1] = 0.1, [3] = 0.1}, -- vi -> ii, IV, V (I, iii less likely)
-                [7] = {[1] = 0.5, [3] = 0.3, [6] = 0.1, [5] = 0.1} -- vii° -> I, iii (vi, V less likely)
-            },
-            ["Disco Major"] = { -- Smooth Major key progressions, ii-V-I, IV-V-I, emphasis on ii, IV, V, vi
-                [1] = {[4] = 0.3, [5] = 0.25, [6] = 0.2, [2] = 0.15, [1] = 0.1}, -- I -> IV, V, vi, ii, I
-                [2] = {[5] = 0.7, [7] = 0.2, [4] = 0.1}, -- ii -> V (strong!), vii°, IV
-                [3] = {[6] = 0.5, [4] = 0.3, [2] = 0.2}, -- iii -> vi, IV, ii (Less common)
-                [4] = {[5] = 0.5, [1] = 0.3, [2] = 0.1, [7] = 0.1}, -- IV -> V, I, ii, vii°
-                [5] = {[1] = 0.6, [6] = 0.2, [4] = 0.1, [3] = 0.1}, -- V -> I (strong!), vi, IV, iii
-                [6] = {[2] = 0.4, [4] = 0.3, [5] = 0.2, [1] = 0.1}, -- vi -> ii, IV, V, I
+            ["Berlin Major"] = { -- REFINED: More I/IV drone, less V
+                [1] = {[1] = 0.4, [4] = 0.3, [6] = 0.15, [2] = 0.1, [3] = 0.05}, -- I -> I, IV, vi, ii, iii (V rare)
+                [2] = {[5] = 0.5, [4] = 0.3, [1] = 0.2}, -- ii -> V, IV, I
+                [3] = {[6] = 0.5, [4] = 0.4, [1] = 0.1}, -- iii -> vi, IV, I
+                [4] = {[4] = 0.3, [1] = 0.4, [5] = 0.2, [2] = 0.1}, -- IV -> IV, I, V, ii
+                [5] = {[1] = 0.7, [6] = 0.2, [4] = 0.1}, -- V -> I (reluctantly), vi, IV
+                [6] = {[1] = 0.3, [2] = 0.3, [4] = 0.2, [5] = 0.1, [6] = 0.1}, -- vi -> I, ii, IV, V, vi
                 [7] = {[1] = 0.6, [3] = 0.3, [5] = 0.1} -- vii° -> I, iii, V
             },
-            ["Beatles Major"] = { -- Diatonic approximation: more vi, ii, some iii, less predictable V-I
+            ["Disco Major"] = { -- REFINED: Stronger ii-V-I, more flow
+                [1] = {[2] = 0.3, [4] = 0.25, [6] = 0.2, [5] = 0.15, [1] = 0.1}, -- I -> ii, IV, vi, V, I
+                [2] = {[5] = 0.8, [7] = 0.1, [4] = 0.1}, -- ii -> V (very strong!), vii°, IV
+                [3] = {[6] = 0.6, [4] = 0.4}, -- iii -> vi, IV
+                [4] = {[5] = 0.6, [1] = 0.2, [2] = 0.1, [7] = 0.1}, -- IV -> V (strong), I, ii, vii°
+                [5] = {[1] = 0.7, [6] = 0.15, [4] = 0.1, [3] = 0.05}, -- V -> I (very strong!), vi, IV, iii
+                [6] = {[2] = 0.5, [4] = 0.2, [5] = 0.2, [1] = 0.1}, -- vi -> ii (strong), IV, V, I
+                [7] = {[1] = 0.7, [3] = 0.2, [5] = 0.1} -- vii° -> I, iii, V
+            },
+            ["Beatles Major"] = { -- REFINED: More iii/vi, deceptive V->vi, less V->I focus
                 [1] = {
                     [4] = 0.25,
-                    [6] = 0.2,
+                    [6] = 0.25,
                     [2] = 0.2,
-                    [5] = 0.15,
-                    [3] = 0.1,
-                    [1] = 0.1
-                }, -- I -> IV, vi, ii, V, iii, I
-                [2] = {[5] = 0.5, [4] = 0.3, [6] = 0.1, [1] = 0.1}, -- ii -> V, IV, vi, I
-                [3] = {[6] = 0.4, [4] = 0.4, [1] = 0.1, [2] = 0.1}, -- iii -> vi, IV, I, ii (More likely than standard)
+                    [3] = 0.15,
+                    [5] = 0.1,
+                    [1] = 0.05
+                }, -- I -> IV, vi, ii, iii, V, I
+                [2] = {[5] = 0.6, [4] = 0.2, [6] = 0.1, [1] = 0.1}, -- ii -> V, IV, vi, I
+                [3] = {[6] = 0.5, [4] = 0.3, [1] = 0.1, [2] = 0.1}, -- iii -> vi, IV, I, ii
                 [4] = {[1] = 0.3, [5] = 0.3, [2] = 0.2, [6] = 0.1, [4] = 0.1}, -- IV -> I, V, ii, vi, IV
-                [5] = {[1] = 0.4, [6] = 0.3, [4] = 0.2, [2] = 0.1}, -- V -> I, vi (deceptive!), IV, ii
-                [6] = {[2] = 0.3, [4] = 0.3, [5] = 0.2, [3] = 0.1, [1] = 0.1}, -- vi -> ii, IV, V, iii, I
-                [7] = {[1] = 0.5, [3] = 0.3, [6] = 0.2} -- vii° -> I, iii, vi (Less common)
+                [5] = {[6] = 0.4, [1] = 0.3, [4] = 0.2, [2] = 0.1}, -- V -> vi (strong deceptive!), I, IV, ii
+                [6] = {
+                    [2] = 0.35,
+                    [4] = 0.25,
+                    [5] = 0.15,
+                    [3] = 0.15,
+                    [1] = 0.1
+                }, -- vi -> ii, IV, V, iii, I
+                [7] = {[1] = 0.5, [6] = 0.3, [3] = 0.2} -- vii° -> I, vi, iii
             },
-            ["Icelandic Mood"] = { -- Minor key, slow changes, atmospheric: i, iv, VI, VII focus
-                [1] = {[1] = 0.4, [4] = 0.2, [6] = 0.2, [7] = 0.1, [3] = 0.1}, -- i -> i (often), iv, VI, VII, III
-                [2] = {[5] = 0.5, [7] = 0.3, [1] = 0.2}, -- ii° -> v, VII, i (Uncommon start)
-                [3] = {[6] = 0.5, [4] = 0.3, [1] = 0.2}, -- III -> VI, iv, i (Uncommon start)
-                [4] = {[4] = 0.4, [1] = 0.3, [6] = 0.15, [7] = 0.15}, -- iv -> iv (often), i, VI, VII
-                [5] = {[1] = 0.6, [6] = 0.3, [4] = 0.1}, -- v -> i, VI, iv (Less functional)
-                [6] = {[6] = 0.3, [1] = 0.3, [4] = 0.2, [7] = 0.2}, -- VI -> VI, i, iv, VII
-                [7] = {[7] = 0.3, [1] = 0.4, [6] = 0.2, [4] = 0.1} -- VII -> VII, i, VI, iv
+            ["Icelandic Mood"] = { -- REFINED: More drone, slower feel
+                [1] = {[1] = 0.5, [4] = 0.2, [6] = 0.15, [7] = 0.1, [3] = 0.05}, -- i -> i (very often), iv, VI, VII, III
+                [2] = {[5] = 0.6, [7] = 0.2, [1] = 0.2}, -- ii° -> v, VII, i
+                [3] = {[6] = 0.6, [4] = 0.3, [1] = 0.1}, -- III -> VI, iv, i
+                [4] = {[4] = 0.5, [1] = 0.3, [6] = 0.1, [7] = 0.1}, -- iv -> iv (very often), i, VI, VII
+                [5] = {[1] = 0.7, [6] = 0.2, [4] = 0.1}, -- v -> i, VI, iv (weak function)
+                [6] = {[6] = 0.4, [1] = 0.3, [4] = 0.15, [7] = 0.15}, -- VI -> VI (often), i, iv, VII
+                [7] = {[7] = 0.4, [1] = 0.4, [6] = 0.1, [4] = 0.1} -- VII -> VII (often), i, VI, iv
             },
-            ["Liquid Minor"] = { -- Smooth minor progressions: ii°-v-i, i-iv-VII, more movement
-                [1] = {[4] = 0.3, [6] = 0.25, [7] = 0.2, [2] = 0.15, [1] = 0.1}, -- i -> iv, VI, VII, ii°, i
-                [2] = {[5] = 0.6, [7] = 0.2, [4] = 0.1, [1] = 0.1}, -- ii° -> v (strong), VII, iv, i
-                [3] = {[6] = 0.5, [4] = 0.3, [7] = 0.2}, -- III -> VI, iv, VII (Less common)
-                [4] = {[7] = 0.4, [1] = 0.3, [5] = 0.2, [2] = 0.1}, -- iv -> VII, i, v, ii°
-                [5] = {[1] = 0.5, [6] = 0.2, [4] = 0.2, [7] = 0.1}, -- v -> i, VI, iv, VII
-                [6] = {[2] = 0.3, [7] = 0.3, [4] = 0.2, [1] = 0.2}, -- VI -> ii°, VII, iv, i
-                [7] = {[1] = 0.4, [4] = 0.3, [6] = 0.2, [2] = 0.1} -- VII -> i, iv, VI, ii°
+            ["Liquid Minor"] = { -- REFINED: Smoother, more ii°-v-i and cycles
+                [1] = {[4] = 0.3, [6] = 0.25, [2] = 0.2, [7] = 0.15, [1] = 0.1}, -- i -> iv, VI, ii°, VII, i
+                [2] = {[5] = 0.7, [7] = 0.15, [4] = 0.1, [1] = 0.05}, -- ii° -> v (very strong), VII, iv, i
+                [3] = {[6] = 0.6, [7] = 0.2, [4] = 0.2}, -- III -> VI, VII, iv
+                [4] = {[7] = 0.4, [5] = 0.3, [1] = 0.2, [2] = 0.1}, -- iv -> VII, v, i, ii°
+                [5] = {[1] = 0.6, [6] = 0.2, [4] = 0.1, [7] = 0.1}, -- v -> i, VI, iv, VII
+                [6] = {[2] = 0.4, [7] = 0.3, [4] = 0.2, [1] = 0.1}, -- VI -> ii°, VII, iv, i
+                [7] = {[1] = 0.4, [6] = 0.3, [4] = 0.2, [2] = 0.1} -- VII -> i, VI, iv, ii°
             },
-            ["Liquid Major"] = { -- Smooth major progressions: ii-V-I, IV-V-vi, etc.
-                [1] = {[2] = 0.3, [4] = 0.3, [6] = 0.2, [5] = 0.1, [1] = 0.1}, -- I -> ii, IV, vi, V, I
-                [2] = {[5] = 0.7, [4] = 0.1, [7] = 0.1, [1] = 0.1}, -- ii -> V (strong!), IV, vii°, I
-                [3] = {[6] = 0.6, [4] = 0.2, [2] = 0.2}, -- iii -> vi, IV, ii (Less common)
-                [4] = {[5] = 0.5, [1] = 0.2, [2] = 0.2, [7] = 0.1}, -- IV -> V, I, ii, vii°
-                [5] = {[1] = 0.5, [6] = 0.3, [4] = 0.1, [2] = 0.1}, -- V -> I, vi, IV, ii
-                [6] = {[2] = 0.5, [4] = 0.2, [5] = 0.2, [1] = 0.1}, -- vi -> ii (strong!), IV, V, I
-                [7] = {[1] = 0.6, [3] = 0.2, [5] = 0.2} -- vii° -> I, iii, V
+            ["Liquid Major"] = { -- REFINED: Smoother, stronger ii-V-I, more vi->ii
+                [1] = {[2] = 0.35, [4] = 0.3, [6] = 0.2, [1] = 0.1, [5] = 0.05}, -- I -> ii, IV, vi, I, V
+                [2] = {[5] = 0.8, [4] = 0.1, [7] = 0.1}, -- ii -> V (very strong!), IV, vii°
+                [3] = {[6] = 0.7, [2] = 0.3}, -- iii -> vi, ii
+                [4] = {[5] = 0.6, [2] = 0.2, [1] = 0.1, [7] = 0.1}, -- IV -> V (strong), ii, I, vii°
+                [5] = {[1] = 0.6, [6] = 0.25, [4] = 0.1, [2] = 0.05}, -- V -> I (strong), vi, IV, ii
+                [6] = {[2] = 0.6, [4] = 0.2, [5] = 0.1, [1] = 0.1}, -- vi -> ii (very strong!), IV, V, I
+                [7] = {[1] = 0.7, [3] = 0.2, [5] = 0.1} -- vii° -> I, iii, V
             }
         }
         self.matrix_names = {};

@@ -388,6 +388,12 @@ return {
         -- *** CORRECTED: Inversion Options as part of self ***
         self.inversion_options = {"Root", "1st", "2nd", "3rd"}
 
+        -- Gate Gap Options
+        self.gate_gap_options = {
+            "0ms", "10ms", "25ms", "50ms", "100ms", "250ms", "500ms"
+        }
+        self.gate_gap_values = {0.0, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5} -- seconds
+
         -- Parameter Defaults
         local default_root = 0
         local default_scale_idx = 1
@@ -395,6 +401,7 @@ return {
         local default_clock_div_idx = 4 -- Index for "4"
         local default_transition_idx = 5 -- Index for "Random"
         local default_inversion_idx = 1 -- Index for "Root"
+        local default_gate_gap_idx = 2 -- Index for "10ms"
 
         -- Load or Set Parameter INDICES from state or defaults
         local loaded_root =
@@ -407,6 +414,7 @@ return {
                                           default_transition_idx
         local loaded_inversion_idx = state.inversion_index or
                                          default_inversion_idx
+        local loaded_gate_gap_idx = state.gate_gap_index or default_gate_gap_idx
 
         -- Validate loaded indices against current definitions
         if loaded_scale_idx < 1 or loaded_scale_idx > #self.scale_names then
@@ -427,6 +435,10 @@ return {
         if loaded_inversion_idx < 1 or loaded_inversion_idx >
             #self.inversion_options then
             loaded_inversion_idx = default_inversion_idx
+        end
+        if loaded_gate_gap_idx < 1 or loaded_gate_gap_idx >
+            #self.gate_gap_values then
+            loaded_gate_gap_idx = default_gate_gap_idx
         end
         if type(loaded_root) ~= "number" or loaded_root < 0 or loaded_root > 11 then
             loaded_root = default_root
@@ -456,6 +468,7 @@ return {
         self.internal_clock_count = state.internal_clock_count or 0;
         self.transition_type =
             self.transition_options_param[loaded_transition_idx]
+        self.gate_gap_duration = self.gate_gap_values[loaded_gate_gap_idx] -- Store duration in seconds
 
         -- Initialize Previous Parameter Tracker
         self.previous_parameters = {
@@ -464,14 +477,16 @@ return {
             [3] = loaded_matrix_idx,
             [4] = loaded_clock_div_idx,
             [5] = loaded_transition_idx,
-            [6] = loaded_inversion_idx
+            [6] = loaded_inversion_idx,
+            [7] = loaded_gate_gap_idx -- Track gate gap index
         }
 
-        -- Initialize Outputs
+        -- Initialize Outputs & Gate State
         self.output_voltages = state.output_voltages or {0.0, 0.0, 0.0, 0.0}
         self.current_notes_voiced = state.current_notes_voiced or
                                         {60, 60, 60, 60}
-        self.voltages_updated = true -- Assume update needed initially
+        self.chord_gate_value = 0.0 -- Initialize Gate State to Low
+        self.gap_timer_remaining = 0.0 -- Initialize Gap Timer
 
         -- Calculate initial chord IF NOT loaded from state
         if not state.output_voltages then
@@ -486,22 +501,28 @@ return {
                     self.output_voltages[j] = midi_note_to_volts(
                                                   initial_notes_voiced[j] or 60)
                 end
+                self.chord_gate_value = 5.0 -- Set gate high for initial chord
             else
                 self.output_voltages = {0.0, 0.0, 0.0, 0.0}
                 self.current_notes_voiced = {60, 60, 60, 60}
+                -- Gate remains low if initial calculation fails
             end
+        else
+            -- If loading state, ensure gate reflects the loaded chord initially
+            if state.output_voltages then self.chord_gate_value = 5.0 end
         end
 
         -- Return I/O and Parameter DEFINITIONS
         return {
             inputs = {kGate, kTrigger},
-            outputs = {kLinear, kLinear, kLinear, kLinear},
+            outputs = {kLinear, kLinear, kLinear, kLinear, kGate}, -- Added kGate
             inputNames = {[1] = "Clock", [2] = "Reset"},
             outputNames = {
                 [1] = "Note 1 (Bass)",
                 [2] = "Note 2 (Tenor)",
                 [3] = "Note 3 (Alto)",
-                [4] = "Note 4 (Soprano)"
+                [4] = "Note 4 (Soprano)",
+                [5] = "Chord Gate Output" -- Added Gate Name
             },
             parameters = {
                 {"Root Note", 0, 11, loaded_root, kMIDINote},
@@ -511,9 +532,8 @@ return {
                 {
                     "Transition", self.transition_options_param,
                     loaded_transition_idx
-                },
-                -- *** CORRECTED: Use self.inversion_options in definition ***
-                {"Inversion", self.inversion_options, loaded_inversion_idx}
+                }, {"Inversion", self.inversion_options, loaded_inversion_idx},
+                {"Gate Gap", self.gate_gap_options, loaded_gate_gap_idx} -- Added Gate Gap Param
             }
         }
     end,
@@ -607,6 +627,7 @@ return {
             -- Check if clock division met
             if self.internal_clock_count >= self.clock_division_steps then
                 self.internal_clock_count = 0 -- Reset division counter
+                self.chord_gate_value = 0.0 -- Set gate low initially
 
                 local new_notes_calculated = false
                 local notes_close;
@@ -642,7 +663,8 @@ return {
                                                       notes_voiced[i] or 60)
                     end
                     new_notes_calculated = true
-                    self.voltages_updated = true
+                    self.chord_gate_value = 5.0 -- Set gate high
+                    self.gap_timer_remaining = 0.0 -- Reset gap timer
 
                     -- After resolving, check if ANOTHER key/scale change is pending immediately
                     if self.key_change_pending or self.scale_change_pending then
@@ -689,6 +711,8 @@ return {
                                     self.previous_parameters[1] =
                                         self.target_root
                                 end
+                                self.chord_gate_value = 5.0 -- Set gate high for transition chord
+                                self.gap_timer_remaining = 0.0 -- Reset gap timer
 
                                 -- Apply immediate scale change *with* the transition if also pending
                                 if self.scale_change_pending then
@@ -701,6 +725,8 @@ return {
                                         self.previous_parameters[2] =
                                             self.target_scale_idx
                                     end
+                                    self.chord_gate_value = 5.0 -- Set gate high for transition chord
+                                    self.gap_timer_remaining = 0.0 -- Reset gap timer
                                 end
 
                             else -- Transition calculation failed
@@ -732,8 +758,9 @@ return {
                                                               notes_voiced[i] or
                                                                   60)
                             end
-                            -- new_notes_calculated is already true from resolution
-                            self.voltages_updated = true
+                            new_notes_calculated = true
+                            self.chord_gate_value = 5.0 -- Set gate high
+                            self.gap_timer_remaining = 0.0 -- Reset gap timer
                         end
                     end -- End immediate re-transition/scale change check
 
@@ -779,7 +806,8 @@ return {
                                 self.previous_parameters[1] = self.target_root
                             end
                             new_notes_calculated = true
-                            self.voltages_updated = true
+                            self.chord_gate_value = 5.0 -- Set gate high
+                            self.gap_timer_remaining = 0.0 -- Reset gap timer
                         else -- Calculation failed
                             self.key_change_pending = false
                             self.scale_change_pending = false -- Clear scale flag too if root change failed
@@ -843,8 +871,9 @@ return {
                             self.output_voltages[i] = midi_note_to_volts(
                                                           notes_voiced[i] or 60)
                         end
-                        new_notes_calculated = true -- Mark that notes were calculated here
-                        self.voltages_updated = true
+                        new_notes_calculated = true
+                        self.chord_gate_value = 5.0 -- Set gate high
+                        self.gap_timer_remaining = 0.0 -- Reset gap timer
                     else -- Fallback if matrix/scale invalid
                         self.current_scale_degree = 1
                         notes_close = self:calculate_chord_tones(1, false)
@@ -855,7 +884,8 @@ return {
                                                           notes_voiced[i] or 60)
                         end
                         new_notes_calculated = true
-                        self.voltages_updated = true
+                        self.chord_gate_value = 5.0 -- Set gate high
+                        self.gap_timer_remaining = 0.0 -- Reset gap timer
                     end
                 end
 
@@ -900,6 +930,7 @@ return {
                 self.previous_parameters[4] = self.parameters[4]
                 self.previous_parameters[5] = self.parameters[5]
                 self.previous_parameters[6] = self.parameters[6] -- Sync inversion param
+                self.previous_parameters[7] = self.parameters[7] -- Sync gate gap index
             end
 
             -- Calculate tonic chord voltages and store immediately
@@ -911,7 +942,8 @@ return {
                 self.output_voltages[i] =
                     midi_note_to_volts(notes_voiced[i] or 60)
             end
-            self.voltages_updated = true
+            self.chord_gate_value = 5.0 -- Set gate high on reset
+            self.gap_timer_remaining = 0.0 -- Reset gap timer
         end
     end,
 
@@ -927,6 +959,7 @@ return {
         local clock_div_param_idx = self.parameters[4]
         local transition_param_idx = self.parameters[5]
         local inversion_param_idx = self.parameters[6]
+        local gate_gap_param_idx = self.parameters[7]
 
         -- Safety check for previous_parameters table existence
         local prev_params_exist = (self.previous_parameters ~= nil)
@@ -1012,14 +1045,41 @@ return {
             end
         end
 
-        -- --- Output Logic ---
-        -- Return cached voltages ONLY if they were updated by gate() or trigger() (or inversion change above if enabled)
-        if self.voltages_updated then
-            self.voltages_updated = false; -- Reset flag after returning
-            return self.output_voltages
-        else
-            return nil -- No update, return nil
+        -- Handle Gate Gap change (Param 7) - Update immediately
+        if prev_params_exist and gate_gap_param_idx ~= nil and
+            gate_gap_param_idx ~= self.previous_parameters[7] then
+            -- Validate index before using
+            if gate_gap_param_idx >= 1 and gate_gap_param_idx <=
+                #self.gate_gap_values then
+                self.gate_gap_duration =
+                    self.gate_gap_values[gate_gap_param_idx]
+                self.previous_parameters[7] = gate_gap_param_idx
+            end
         end
+
+        -- --- Timer and Output Logic ---
+
+        -- Decrement gap timer
+        if self.gap_timer_remaining > 0 then
+            self.gap_timer_remaining = math.max(0.0,
+                                                self.gap_timer_remaining - dt)
+        end
+
+        -- Check if the *next* clock pulse triggers a chord change and start gap if needed
+        if self.gate_gap_duration > 0 and self.internal_clock_count ==
+            self.clock_division_steps - 1 then
+            self.gap_timer_remaining = self.gate_gap_duration
+        end
+
+        -- Determine output gate value based on timer
+        local output_gate_value = (self.gap_timer_remaining > 0) and 0.0 or
+                                      self.chord_gate_value
+
+        -- Return current voltages and calculated gate state
+        return {
+            self.output_voltages[1], self.output_voltages[2],
+            self.output_voltages[3], self.output_voltages[4], output_gate_value -- Use calculated value
+        }
     end,
 
     draw = function(self)
@@ -1214,6 +1274,8 @@ return {
                                         self.previous_parameters[5]) or 5
         local prev_inversion_idx = (self and self.previous_parameters and
                                        self.previous_parameters[6]) or 1
+        local prev_gate_gap_idx = (self and self.previous_parameters and
+                                      self.previous_parameters[7]) or 2 -- Default to 10ms index
 
         local state = {
             script_version = self.SCRIPT_VERSION, -- Save current version
@@ -1241,9 +1303,13 @@ return {
             -- Inversion State (save last known param 6 value)
             inversion_index = prev_inversion_idx,
 
+            -- Gate Gap State (save last known param 7 value)
+            gate_gap_index = prev_gate_gap_idx,
+
             -- Output State
             output_voltages = self.output_voltages,
             current_notes_voiced = self.current_notes_voiced
+            -- chord_gate_value / gap_timer_remaining are transient, not saved
         }
         return state
     end

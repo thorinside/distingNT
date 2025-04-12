@@ -33,10 +33,9 @@ local OUTPUT_BUFFER = {0, 0} -- Preallocated output buffer for step()
 local lastActiveVoltIndex = 1 -- Tracks last active voltage sequence index
 
 -- Mode and Favorites state
-local editMode = "parameter" -- Can be "parameter" or "favorites"
 local selectedFavoriteSlot = 1
 local queuedFavorite = nil
-local favorites = {nil, nil, nil, nil} -- NEW: Stores full state snapshots (parameters, voltageSequences, gateSequences)
+local favorites = {nil, nil, nil, nil} -- Stores parameter snapshots
 
 -- Tables to hold 20 voltage sequences and 20 gate sequences.
 local voltageSequences = {}
@@ -164,24 +163,120 @@ return {
     author = "Andras Eichstaedt / Thorinside / 4o",
 
     init = function(self)
-        initSequences()
+        if self.state then
+            -- Restore state if available (moved from deserialise)
+            local state = self.state -- Use the state provided in self
+
+            -- Restore parameters first, as they are needed for updateVoltageCached
+            if state.parameters then
+                -- Initialize self.parameters table if it doesn't exist (shouldn't happen ideally, but safe)
+                if not self.parameters then self.parameters = {} end
+                for i = 1, #state.parameters do
+                    self.parameters[i] = state.parameters[i]
+                end
+            else
+                -- If no parameters in state, we need some defaults before returning the structure
+                -- Ideally, the environment guarantees parameters or we load defaults here.
+                -- For now, assume if state exists, parameters exist.
+                -- If not, the later 'return' structure provides defaults for the environment.
+            end
+
+            -- Restore voltage sequences
+            if state.voltageSequences then
+                voltageSequences = {} -- Clear existing global sequences
+                for i = 1, #state.voltageSequences do
+                    voltageSequences[i] = {
+                        currentStep = state.voltageSequences[i].currentStep,
+                        stepCount = state.voltageSequences[i].stepCount,
+                        cachedVoltage = state.voltageSequences[i].cachedVoltage,
+                        steps = {}
+                    }
+                    for j = 1, MAX_STEPS do
+                        voltageSequences[i].steps[j] =
+                            state.voltageSequences[i].steps[j]
+                    end
+                end
+                -- Crucially, update cached voltage for the loaded active sequence
+                local voltIdx = self.parameters[1] -- Get index from restored params
+                if voltageSequences[voltIdx] then -- Check sequence exists
+                    updateVoltageCached(voltageSequences[voltIdx],
+                                        self.parameters[7], self.parameters[4],
+                                        self.parameters[5], self.parameters[6])
+                    lastActiveVoltIndex = voltIdx -- Update the tracker
+                end
+            else
+                initSequences() -- Fallback if sequence data is missing in state
+            end
+
+            -- Restore gate sequences
+            if state.gateSequences then
+                gateSequences = {} -- Clear existing global sequences
+                for i = 1, #state.gateSequences do
+                    gateSequences[i] = {
+                        stepIndex = state.gateSequences[i].stepIndex,
+                        numSteps = state.gateSequences[i].numSteps,
+                        gateRemainingSteps = state.gateSequences[i]
+                            .gateRemainingSteps,
+                        steps = {}
+                    }
+                    for j = 1, MAX_STEPS do
+                        gateSequences[i].steps[j] =
+                            state.gateSequences[i].steps[j]
+                    end
+                end
+            else
+                -- Only initialize gates if voltages also needed initializing
+                -- Assuming state is usually all-or-nothing regarding sequences
+                if not state.voltageSequences then
+                    initSequences()
+                end
+            end
+
+            -- Restore favorites (array of snapshots)
+            if state.favorites then
+                -- Use deepcopy to restore fully
+                favorites = deepcopy(state.favorites)
+                -- Ensure favorites table has exactly 4 elements, pad with nil if needed
+                for i = #favorites + 1, 4 do favorites[i] = nil end
+            else
+                -- If no favorites in save file, initialize as empty
+                favorites = {nil, nil, nil, nil}
+            end
+
+        else
+            -- No state provided, initialize everything to defaults
+            initSequences()
+            -- Initialize self.parameters with defaults if state wasn't loaded
+            -- The return structure below defines defaults, but let's ensure self.parameters exists
+            -- Note: initSequences() doesn't touch self.parameters
+            self.parameters = {1, 1, 8, -1, 1, 2, 16, 16, 50, 100} -- Default values matching the return structure
+            -- Update cache for default sequence 1
+            updateVoltageCached(voltageSequences[1], self.parameters[7],
+                                self.parameters[4], self.parameters[5],
+                                self.parameters[6])
+            lastActiveVoltIndex = 1
+        end
+
+        -- Initialize visual blink toggle state
+        self.blinkToggle = true
+
+        -- Return the required structure (parameter defaults are fixed here)
         return {
-            -- Three inputs:
-            -- 1 = clock (stepping), 2 = reset trigger, 3 = global randomize trigger
             inputs = {kGate, kTrigger, kTrigger},
             outputs = {kStepped, kGate},
             inputNames = {"Clock", "Reset", "Randomize"},
             outputNames = {"CV Output", "Gate Output"},
             parameters = {
-                {"CV Sequence", 1, NUM_SEQUENCES, 1, kInt},
-                {"Gate Sequence", 1, NUM_SEQUENCES, 1, kInt},
-                {"CV Steps", 1, MAX_STEPS, 8, kInt},
-                {"Min CV", -10, 10, -1, kVolts}, {"Max CV", -10, 10, 1, kVolts},
-                {"Polarity", {"Positive", "Bipolar", "Negative"}, 2, kEnum},
-                {"Bit Depth (CV)", 2, 16, 16, kInt},
-                {"Gate Steps", 1, MAX_STEPS, 16, kInt},
-                {"Threshold", 1, 100, 50, kPercent},
-                {"Gate Length", 5, 1000, 100, kMs}
+                {"CV Sequence", 1, NUM_SEQUENCES, 1, kInt}, -- Default: 1
+                {"Gate Sequence", 1, NUM_SEQUENCES, 1, kInt}, -- Default: 1
+                {"CV Steps", 1, MAX_STEPS, 8, kInt}, -- Default: 8
+                {"Min CV", -10, 10, -1, kVolts}, -- Default: -1
+                {"Max CV", -10, 10, 1, kVolts}, -- Default: 1
+                {"Polarity", {"Positive", "Bipolar", "Negative"}, 2, kEnum}, -- Default: Bipolar (2)
+                {"Bit Depth (CV)", 2, 16, 16, kInt}, -- Default: 16
+                {"Gate Steps", 1, MAX_STEPS, 16, kInt}, -- Default: 16
+                {"Threshold", 1, 100, 50, kPercent}, -- Default: 50
+                {"Gate Length", 5, 1000, 100, kMs} -- Default: 100ms
             }
         }
     end,
@@ -189,6 +284,53 @@ return {
     gate = function(self, input, rising)
         local voltIdx = self.parameters[1]
         local gateIdx = self.parameters[2]
+        local favoriteJustLoaded = false -- Flag to track if a favorite was loaded this tick
+
+        -- Check if a favorite is queued and sequences are at step 1
+        if queuedFavorite ~= nil then
+            local currentGateSeq = gateSequences[gateIdx]
+
+            -- Launch when the gate sequence hits step 1
+            if currentGateSeq.stepIndex == 1 then
+                local snapshot = favorites[queuedFavorite]
+                -- Check if the favorite slot is valid and not nil
+                if snapshot then
+                    -- Restore parameters only
+                    local alg = getCurrentAlgorithm()
+                    for i = 1, #snapshot.parameters do
+                        -- Apply parameter via API
+                        setParameter(alg, self.parameterOffset + i,
+                                     snapshot.parameters[i])
+                        -- Immediately update internal state for consistency
+                        self.parameters[i] = snapshot.parameters[i]
+                    end
+
+                    -- Update cached state based on restored parameters and the *new* active sequence index
+                    local restoredVoltIdx = self.parameters[1] -- Get index from restored params
+                    lastActiveVoltIndex = restoredVoltIdx -- Update tracker
+                    if voltageSequences[restoredVoltIdx] then -- Check sequence exists
+                        updateVoltageCached(voltageSequences[restoredVoltIdx],
+                                            self.parameters[7],
+                                            self.parameters[4],
+                                            self.parameters[5],
+                                            self.parameters[6]) -- Use restored params
+                    end
+
+                    -- Update voltIdx and gateIdx in case they were changed by loading the favorite
+                    voltIdx = self.parameters[1]
+                    gateIdx = self.parameters[2]
+                end
+                queuedFavorite = nil -- Clear the queue after attempting load
+                self.blinkToggle = true -- Ensure the indicator becomes solid white immediately after loading
+                favoriteJustLoaded = true -- Set the flag
+            end
+        end
+
+        -- Toggle blink state on clock input, *unless* a favorite was just loaded
+        if input == 1 and rising and not favoriteJustLoaded then
+            self.blinkToggle = not self.blinkToggle
+        end
+
         if input == 1 and rising then
             -- Advance voltage sequence.
             local voltSeq = voltageSequences[voltIdx]
@@ -233,50 +375,22 @@ return {
     step = function(self, dt, inputs)
         local voltIdx = self.parameters[1]
         local gateIdx = self.parameters[2]
+
+        -- Normal step operation: Update cached voltage if the active index changed
         if voltIdx ~= lastActiveVoltIndex then
             lastActiveVoltIndex = voltIdx
             updateVoltageCached(voltageSequences[voltIdx], self.parameters[7],
                                 self.parameters[4], self.parameters[5],
                                 self.parameters[6])
         end
-        OUTPUT_BUFFER[1] = voltageSequences[voltIdx].cachedVoltage
-        local gateSeq = gateSequences[gateIdx]
+
+        OUTPUT_BUFFER[1] = voltageSequences[lastActiveVoltIndex].cachedVoltage -- Use lastActiveVoltIndex
+        local gateSeq = gateSequences[gateIdx] -- Use current parameter for gate index
         if gateSeq.gateRemainingSteps > 0 then
             gateSeq.gateRemainingSteps = gateSeq.gateRemainingSteps - 1
             OUTPUT_BUFFER[2] = 5
         else
             OUTPUT_BUFFER[2] = 0
-        end
-
-        -- If a favorite change is queued, apply it at the start of the volt sequence
-        if queuedFavorite ~= nil and voltageSequences[voltIdx].currentStep == 1 then
-            local snapshot = favorites[queuedFavorite]
-            -- Check if the favorite slot is valid and not nil
-            if snapshot then
-                -- Restore sequences (deep copy)
-                voltageSequences = deepcopy(snapshot.voltageSequences)
-                gateSequences = deepcopy(snapshot.gateSequences)
-
-                -- Restore parameters
-                local alg = getCurrentAlgorithm()
-                for i = 1, #snapshot.parameters do
-                    -- Apply parameter via API
-                    setParameter(alg, self.parameterOffset + i,
-                                 snapshot.parameters[i])
-                    -- Immediately update internal state for consistency
-                    self.parameters[i] = snapshot.parameters[i]
-                end
-
-                -- Update cached state based on restored active sequences
-                local restoredVoltIdx = self.parameters[1]
-                lastActiveVoltIndex = restoredVoltIdx
-                if voltageSequences[restoredVoltIdx] then
-                    updateVoltageCached(voltageSequences[restoredVoltIdx],
-                                        self.parameters[7], self.parameters[4],
-                                        self.parameters[5], self.parameters[6])
-                end
-            end
-            queuedFavorite = nil -- Clear the queue
         end
 
         return OUTPUT_BUFFER
@@ -288,29 +402,18 @@ return {
         ensureInitialized(self)
         return {
             (self.parameters[7] - 2) / 14.0, -- Bit Depth normalized to 0-1
-            (self.parameters[9] - 1) / 99.0, -- Threshold normalized to 0-1
-            (self.parameters[10] - 5) / 995.0 -- Gate Length normalized to 0-1
+            (self.parameters[9] - 1) / 99.0 -- Threshold normalized to 0-1
         }
     end,
 
-    pot1Push = function(self)
-        if editMode == "parameter" then
-            editMode = "favorites"
-        else
-            editMode = "parameter"
-        end
-        -- Reset selection when changing mode
-        selectedFavoriteSlot = 1
-        queuedFavorite = nil
-    end,
-
     pot3Push = function(self)
+        -- Load selected favorite immediately if the slot has been saved (is not nil)
         -- Only queue if the selected slot has been saved (is not nil)
         if selectedFavoriteSlot >= 1 and selectedFavoriteSlot <= 4 and
             favorites[selectedFavoriteSlot] then
             queuedFavorite = selectedFavoriteSlot
         else
-            queuedFavorite = nil -- Explicitly clear queue if slot is empty/nil
+            queuedFavorite = nil -- Explicitly clear queue if slot is empty/invalid
         end
     end,
 
@@ -329,43 +432,29 @@ return {
     end,
 
     pot1Turn = function(self, value)
-        if editMode == "parameter" then
-            local algorithm = getCurrentAlgorithm()
-            -- Bit Depth (CV) - Map 0-1 to range 2-16
-            local bitDepth = math.floor(2 + value * 14)
-            setParameter(algorithm, self.parameterOffset + 7, bitDepth)
-        end
+        local algorithm = getCurrentAlgorithm()
+        -- Bit Depth (CV) - Map 0-1 to range 2-16
+        local bitDepth = math.floor(2 + value * 14)
+        setParameter(algorithm, self.parameterOffset + 7, bitDepth)
     end,
 
     pot2Turn = function(self, value)
-        if editMode == "parameter" then
-            local algorithm = getCurrentAlgorithm()
-            -- Threshold - Map 0-1 to range 1-100
-            local threshold = math.floor(1 + value * 99)
-            setParameter(algorithm, self.parameterOffset + 9, threshold)
-        end
+        local algorithm = getCurrentAlgorithm()
+        -- Threshold - Map 0-1 to range 1-100
+        local threshold = math.floor(1 + value * 99)
+        setParameter(algorithm, self.parameterOffset + 9, threshold)
     end,
 
     pot3Turn = function(self, value)
-        if editMode == "parameter" then
-            local algorithm = getCurrentAlgorithm()
-            -- Gate Length - Map 0-1 to range 5-1000
-            local gateLength = math.floor(5 + value * 995)
-            setParameter(algorithm, self.parameterOffset + 10, gateLength)
-        else -- favorites mode
-            -- Select favorite slot 1-4 based on pot value 0-1
-            selectedFavoriteSlot = 1 + math.floor(value * 3.99)
-            queuedFavorite = nil -- Clear queue if user scrolls
-        end
+        -- Always control favorite selection
+        -- Select favorite slot 1-4 based on pot value 0-1
+        selectedFavoriteSlot = 1 + math.floor(value * 3.99)
+        queuedFavorite = nil -- Clear queue if user scrolls while selecting
     end,
 
     encoder2Push = function(self)
-        -- Save current *full state*, managing favorites like a 4-slot stack
-        local currentState = {
-            parameters = deepcopy(self.parameters),
-            voltageSequences = deepcopy(voltageSequences),
-            gateSequences = deepcopy(gateSequences)
-        }
+        -- Save current *parameters*, managing favorites like a 4-slot stack
+        local currentState = {parameters = deepcopy(self.parameters)}
 
         local saved = false
         -- Try to save in the first empty slot
@@ -435,62 +524,6 @@ return {
         return state
     end,
 
-    deserialise = function(self, state)
-        if not state then return end
-
-        -- Restore parameters
-        if state.parameters then
-            for i = 1, #state.parameters do
-                self.parameters[i] = state.parameters[i]
-            end
-        end
-
-        -- Restore voltage sequences
-        if state.voltageSequences then
-            voltageSequences = {}
-            for i = 1, #state.voltageSequences do
-                voltageSequences[i] = {
-                    currentStep = state.voltageSequences[i].currentStep,
-                    stepCount = state.voltageSequences[i].stepCount,
-                    cachedVoltage = state.voltageSequences[i].cachedVoltage,
-                    steps = {}
-                }
-                for j = 1, MAX_STEPS do
-                    voltageSequences[i].steps[j] =
-                        state.voltageSequences[i].steps[j]
-                end
-            end
-        end
-
-        -- Restore gate sequences
-        if state.gateSequences then
-            gateSequences = {}
-            for i = 1, #state.gateSequences do
-                gateSequences[i] = {
-                    stepIndex = state.gateSequences[i].stepIndex,
-                    numSteps = state.gateSequences[i].numSteps,
-                    gateRemainingSteps = state.gateSequences[i]
-                        .gateRemainingSteps,
-                    steps = {}
-                }
-                for j = 1, MAX_STEPS do
-                    gateSequences[i].steps[j] = state.gateSequences[i].steps[j]
-                end
-            end
-        end
-
-        -- Restore favorites (array of snapshots)
-        if state.favorites then
-            -- Use deepcopy to restore fully
-            favorites = deepcopy(state.favorites)
-            -- Ensure favorites table has exactly 4 elements, pad with nil if needed
-            for i = #favorites + 1, 4 do favorites[i] = nil end
-        else
-            -- If no favorites in save file, initialize as empty
-            favorites = {nil, nil, nil, nil}
-        end
-    end,
-
     draw = function(self)
         ensureInitialized(self)
         local voltIdx = self.parameters[1]
@@ -508,8 +541,6 @@ return {
         drawTinyText(textX, textY + 16, "Bit Depth: " .. self.parameters[7])
         drawTinyText(textX, textY + 24,
                      "Threshold: " .. self.parameters[9] .. "%")
-        drawTinyText(textX, textY + 32,
-                     "Gate Len: " .. self.parameters[10] .. "ms")
 
         -- Draw Persistent Favorites Stack
         local favStackX = 204 -- Moved right 4 pixels (smaller on the left)
@@ -531,13 +562,33 @@ return {
                 bgColor = 5 -- Slightly brighter default bg for saved slots
             end
 
-            if editMode == "favorites" and i == selectedFavoriteSlot then
+            -- Draw selection indicator for the currently selected slot *only if nothing is queued*
+            if i == selectedFavoriteSlot then
                 borderColor = 15 -- Highlight selected slot border
+                -- Draw the indicator SOLID white if nothing is queued
+                if queuedFavorite == nil then
+                    local indicatorColor = 15 -- Solid white
+                    local indicatorX1 = favStackX - 4
+                    local indicatorY1 = currentY
+                    local indicatorX2 = favStackX - 2
+                    local indicatorY2 = currentY + favHeight - 1
+                    drawRectangle(indicatorX1, indicatorY1, indicatorX2,
+                                  indicatorY2, indicatorColor) -- Use solid white
+                end
             end
+
+            -- Handle queued favorite indicator (flashing line)
             if i == queuedFavorite then
                 -- Indicate queued favorite (works even if empty, though queueing empty is prevented)
-                bgColor = 10
-                borderColor = 15
+                borderColor = 15 -- Keep border highlighted
+                -- Draw the indicator rectangle, alternating color with blinkToggle
+                local indicatorColor = self.blinkToggle and 15 or 2 -- Alternate color (white/bg)
+                local indicatorX1 = favStackX - 4
+                local indicatorY1 = currentY
+                local indicatorX2 = favStackX - 2
+                local indicatorY2 = currentY + favHeight - 1
+                drawRectangle(indicatorX1, indicatorY1, indicatorX2,
+                              indicatorY2, indicatorColor) -- Use alternating color
             end
 
             -- Draw background and border for the slot
@@ -552,13 +603,9 @@ return {
             drawLine(bx2, by1, bx2, by2, borderColor) -- Right
 
             if isEmpty then
-                -- drawTinyText(favStackX + 2, currentY + 1, "(empty)") -- Removed this line
+                -- Keep drawing background/border, but no text needed for empty
             else
-                -- Draw abstract tiny gate bars representation
-                -- local miniSteps = 16 -- Try to show more steps in the width
-                -- local barHeight = favHeight - 2 -- Leave 1px top/bottom margin
-
-                -- New Two-Row Representation
+                -- Restore the two-row graphical representation
                 local miniSteps = 8 -- Represent 8 steps
                 local miniBlockHeight = 3
                 local miniGap = 0 -- No gap between rows needed if height is 3 in 8px total
@@ -566,18 +613,17 @@ return {
                 local miniCvY = currentY + 1 + miniBlockHeight + miniGap
 
                 local favParams = snapshot.parameters
-                local favVoltSeqTable = snapshot.voltageSequences
-                local favGateSeqTable = snapshot.gateSequences
                 local favCvIdx = favParams[1]
                 local favGateIdx = favParams[2]
-                local favThreshold = favParams[9] -- Saved threshold
+                local favThreshold = favParams[9] -- Use saved threshold
+                local favNumGate = favParams[8] -- Use saved gate steps param
+                local favNumVolt = favParams[3] -- Use saved CV steps param
 
-                if favVoltSeqTable and favGateSeqTable and
-                    favVoltSeqTable[favCvIdx] and favGateSeqTable[favGateIdx] then
-                    local favVoltSeq = favVoltSeqTable[favCvIdx]
-                    local favGateSeq = favGateSeqTable[favGateIdx]
-                    local favNumGate = favParams[8] -- Saved gate steps param
-                    local favNumVolt = favParams[3] -- Saved CV steps param
+                -- Access the GLOBAL sequence tables using indices from the snapshot
+                local favVoltSeq = voltageSequences[favCvIdx]
+                local favGateSeq = gateSequences[favGateIdx]
+
+                if favVoltSeq and favGateSeq then
                     local miniBlockWidth = favWidth / miniSteps
 
                     -- Mini Gate Pattern (Top Row)
@@ -586,6 +632,7 @@ return {
                         local miniX = favStackX + 1 + (s - 1) * miniBlockWidth
                         local miniEndX = miniX + miniBlockWidth - 1
                         local gateColor = 5 -- Dim color for off steps
+                        -- Check if the step data exists in the global sequence before accessing
                         if favGateSeq.steps[stepIdx] and
                             favGateSeq.steps[stepIdx] >= favThreshold then
                             gateColor = 15 -- Bright color for on steps
@@ -608,21 +655,22 @@ return {
                         local stepIdx = ((s - 1) % favNumVolt) + 1
                         local miniX = favStackX + 1 + (s - 1) * miniBlockWidth
                         local miniEndX = miniX + miniBlockWidth - 1
-                        local raw = favVoltSeq.steps[stepIdx]
-                        local cvColor = 1 -- Default color if raw is nil
+                        local raw = favVoltSeq.steps[stepIdx] -- Access step data from global sequence
+                        local cvColor = 1 -- Default color if raw is nil or sequence missing
                         if raw then
                             local voltage
-                            if favParams[6] == 2 then
+                            -- Use saved polarity param (favParams[6])
+                            if favParams[6] == 2 then -- Bipolar
                                 voltage =
                                     (raw + 32768) / 65535 *
                                         (favEffectiveMax - favEffectiveMin) +
                                         favEffectiveMin
-                            elseif favParams[6] == 1 then
+                            elseif favParams[6] == 1 then -- Positive
                                 voltage =
                                     (raw < 0 and 0 or raw) / 32767 *
                                         (favEffectiveMax - favEffectiveMin) +
                                         favEffectiveMin
-                            else
+                            else -- Negative
                                 voltage =
                                     ((raw > 0 and 0 or raw) + 32768) / 32768 *
                                         (favEffectiveMax - favEffectiveMin) +
@@ -647,25 +695,9 @@ return {
                                       miniCvY + miniBlockHeight - 1, cvColor)
                     end
                 else
-                    -- Draw placeholder if sequence data is missing (shouldn't happen with snapshots)
-                    drawTinyText(favStackX + 2, currentY + 1, "err")
+                    -- Draw placeholder if sequence data is missing for the saved index
+                    drawTinyText(favStackX + 2, currentY + 1, "idx err")
                 end
-
-                -- Remove old gate bar drawing code (already replaced)
-                --[[ 
-                local barWidth = favWidth / miniSteps
-
-                for s = 1, miniSteps do
-                    local stepIdx = ((s - 1) % favNumGate) + 1
-                    local barX = favStackX + 1 + (s - 1) * barWidth
-                    local barEndX = barX + barWidth - 1
-                    local barColor = 5 -- Dim color for off steps
-                    if favGateSeq.steps[stepIdx] and favGateSeq.steps[stepIdx] >= favThreshold then
-                        barColor = 15 -- Bright color for on steps
-                    end
-                    drawRectangle(math.floor(barX), currentY + 1, math.floor(barEndX), currentY + barHeight, barColor)
-                end
-                ]] --
             end
         end
 

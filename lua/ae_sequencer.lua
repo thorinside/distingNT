@@ -267,6 +267,7 @@ return {
 
         -- Initialize visual blink toggle state
         self.blinkToggle = true
+        self.pot3JustPushed = false -- Initialize the new flag
 
         -- Return the required structure (parameter defaults are fixed here)
         return {
@@ -292,7 +293,6 @@ return {
     gate = function(self, input, rising)
         local voltIdx = self.parameters[1]
         local gateIdx = self.parameters[2]
-        local favoriteJustLoaded = false -- Flag to track if a favorite was loaded this tick
 
         -- Check if a favorite is queued and sequences are at step 1
         if queuedFavorite ~= nil then
@@ -301,7 +301,6 @@ return {
             -- Launch when the gate sequence hits step 1
             if currentGateSeq.stepIndex == 1 then
                 local snapshot = favorites[queuedFavorite]
-                -- Check if the favorite slot is valid and not nil
                 if snapshot then
                     -- Restore parameters only
                     local alg = getCurrentAlgorithm()
@@ -330,12 +329,11 @@ return {
                 end
                 queuedFavorite = nil -- Clear the queue after attempting load
                 self.blinkToggle = true -- Ensure the indicator becomes solid white immediately after loading
-                favoriteJustLoaded = true -- Set the flag
             end
         end
 
-        -- Toggle blink state on clock input, *unless* a favorite was just loaded
-        if input == 1 and rising and not favoriteJustLoaded then
+        -- Toggle blink state on clock input *only* if a favorite is queued
+        if queuedFavorite ~= nil and input == 1 and rising then
             self.blinkToggle = not self.blinkToggle
         end
 
@@ -384,6 +382,18 @@ return {
         local voltIdx = self.parameters[1]
         local gateIdx = self.parameters[2]
 
+        -- Check if pot 3 was just pushed to queue a favorite
+        if self.pot3JustPushed then
+            if selectedFavoriteSlot >= 1 and selectedFavoriteSlot <= 4 and
+                favorites[selectedFavoriteSlot] then
+                queuedFavorite = selectedFavoriteSlot
+                self.blinkToggle = true -- Start indicator solid white before first blink
+            else
+                queuedFavorite = nil -- Clear queue if slot is empty/invalid
+            end
+            self.pot3JustPushed = false -- Reset the flag
+        end
+
         -- Normal step operation: Update cached voltage if the active index changed
         if voltIdx ~= lastActiveVoltIndex then
             lastActiveVoltIndex = voltIdx
@@ -418,12 +428,13 @@ return {
     pot3Push = function(self)
         -- Load selected favorite immediately if the slot has been saved (is not nil)
         -- Only queue if the selected slot has been saved (is not nil)
-        if selectedFavoriteSlot >= 1 and selectedFavoriteSlot <= 4 and
-            favorites[selectedFavoriteSlot] then
-            queuedFavorite = selectedFavoriteSlot
-        else
-            queuedFavorite = nil -- Explicitly clear queue if slot is empty/invalid
-        end
+        -- if selectedFavoriteSlot >= 1 and selectedFavoriteSlot <= 4 and
+        --     favorites[selectedFavoriteSlot] then
+        --     queuedFavorite = selectedFavoriteSlot
+        -- else
+        --     queuedFavorite = nil -- Explicitly clear queue if slot is empty/invalid
+        -- end
+        self.pot3JustPushed = true -- Signal that the push event occurred
     end,
 
     encoder1Turn = function(self, value)
@@ -457,8 +468,17 @@ return {
     pot3Turn = function(self, value)
         -- Always control favorite selection
         -- Select favorite slot 1-4 based on pot value 0-1
-        selectedFavoriteSlot = 1 + math.floor(value * 3.99)
-        queuedFavorite = nil -- Clear queue if user scrolls while selecting
+        local newSelectedFavoriteSlot = 1 + math.floor(value * 3.99)
+
+        -- Only clear the queue if a favorite is queued AND the pot turn
+        -- results in selecting a DIFFERENT slot than the one queued.
+        if queuedFavorite ~= nil and newSelectedFavoriteSlot ~= queuedFavorite then
+            queuedFavorite = nil
+        end
+
+        -- Update the selected slot regardless, for UI feedback
+        selectedFavoriteSlot = newSelectedFavoriteSlot
+        -- queuedFavorite = nil -- Clear queue if user scrolls while selecting -- OLD LOGIC
     end,
 
     encoder2Push = function(self)
@@ -799,5 +819,6 @@ return {
             drawRectangle(drawStartX, voltY, drawEndX,
                           voltY + voltBlockHeight - 2, colorIndex) -- Adjusted block height
         end
+        return true
     end
 }

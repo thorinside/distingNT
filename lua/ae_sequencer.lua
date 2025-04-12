@@ -755,11 +755,6 @@ return {
             -- Ensure minimum width of 1px for drawing
             if drawEndX < drawStartX then drawEndX = drawStartX end
 
-            -- If this is the active gate step, draw a white border (around the block)
-            if i == gateSeq.stepIndex then
-                drawRectangle(drawStartX - 1, gateY - 1, drawEndX + 1,
-                              gateY + gateBlockHeight - 2 + 1, 15) -- Adjusted border height
-            end
             -- Draw the block
             if gateSeq.steps[i] >= self.parameters[9] then
                 drawRectangle(drawStartX, gateY, drawEndX,
@@ -767,6 +762,12 @@ return {
             else
                 drawRectangle(drawStartX, gateY, drawEndX,
                               gateY + gateBlockHeight - 2, 3) -- Adjusted block height
+            end
+            -- If this is the active gate step, draw a 2px high white line below the block
+            if i == gateSeq.stepIndex then
+                local lineY1 = gateY + gateBlockHeight - 1
+                local lineY2 = gateY + gateBlockHeight
+                drawRectangle(drawStartX, lineY1, drawEndX, lineY2, 15) -- White line indicator
             end
         end
 
@@ -810,14 +811,15 @@ return {
             if norm > 1 then norm = 1 end
             local colorIndex = math.floor(norm * 14) + 1
 
-            -- If this is the active step, draw a white border (around the block)
-            if i == voltSeq.currentStep then
-                drawRectangle(drawStartX - 1, voltY - 1, drawEndX + 1,
-                              voltY + voltBlockHeight - 2 + 1, 15) -- Adjusted border height
-            end
             -- Draw the block
             drawRectangle(drawStartX, voltY, drawEndX,
                           voltY + voltBlockHeight - 2, colorIndex) -- Adjusted block height
+            -- If this is the active CV step, draw a 2px high white line below the block
+            if i == voltSeq.currentStep then
+                local lineY1 = voltY + voltBlockHeight - 1
+                local lineY2 = voltY + voltBlockHeight
+                drawRectangle(drawStartX, lineY1, drawEndX, lineY2, 15) -- White line indicator
+            end
         end
         return true
     end

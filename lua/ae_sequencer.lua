@@ -243,6 +243,14 @@ return {
                 favorites = {nil, nil, nil, nil}
             end
 
+            -- Restore selected favorite slot
+            if state.selectedFavoriteSlot then
+                selectedFavoriteSlot = state.selectedFavoriteSlot
+            else
+                -- Default if not found in state (handles older saves)
+                selectedFavoriteSlot = 1
+            end
+
         else
             -- No state provided, initialize everything to defaults
             initSequences()
@@ -402,7 +410,8 @@ return {
         ensureInitialized(self)
         return {
             (self.parameters[7] - 2) / 14.0, -- Bit Depth normalized to 0-1
-            (self.parameters[9] - 1) / 99.0 -- Threshold normalized to 0-1
+            (self.parameters[9] - 1) / 99.0, -- Threshold normalized to 0-1
+            (selectedFavoriteSlot - 1) / 3.0 -- Selected favorite slot normalized 0-1
         }
     end,
 
@@ -520,6 +529,9 @@ return {
         -- Save favorites (array of snapshots)
         -- Use deepcopy to ensure nested tables are fully copied
         state.favorites = deepcopy(favorites)
+
+        -- Save selected favorite slot
+        state.selectedFavoriteSlot = selectedFavoriteSlot
 
         return state
     end,

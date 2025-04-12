@@ -355,7 +355,7 @@ return {
             if gateSeq.stepIndex > gateSeq.numSteps then
                 gateSeq.stepIndex = 1
             end
-            if gateSeq.steps[gateSeq.stepIndex] >= self.parameters[9] then
+            if gateSeq.steps[gateSeq.stepIndex] <= self.parameters[9] then
                 gateSeq.gateRemainingSteps = self.parameters[10]
             end
         end
@@ -419,8 +419,8 @@ return {
     setupUi = function(self)
         ensureInitialized(self)
         return {
-            (self.parameters[7] - 2) / 14.0, -- Bit Depth normalized to 0-1
-            (self.parameters[9] - 1) / 99.0, -- Threshold normalized to 0-1
+            (self.parameters[9] - 1) / 99.0, -- Threshold normalized to 0-1 (Now controlled by Pot 1)
+            (self.parameters[7] - 2) / 14.0, -- Bit Depth normalized to 0-1 (Now controlled by Pot 2)
             (selectedFavoriteSlot - 1) / 3.0 -- Selected favorite slot normalized 0-1
         }
     end,
@@ -453,16 +453,16 @@ return {
 
     pot1Turn = function(self, value)
         local algorithm = getCurrentAlgorithm()
-        -- Bit Depth (CV) - Map 0-1 to range 2-16
-        local bitDepth = math.floor(2 + value * 14)
-        setParameter(algorithm, self.parameterOffset + 7, bitDepth)
+        -- Now controls Threshold - Map 0-1 to range 1-100
+        local threshold = math.floor(1 + value * 99)
+        setParameter(algorithm, self.parameterOffset + 9, threshold)
     end,
 
     pot2Turn = function(self, value)
         local algorithm = getCurrentAlgorithm()
-        -- Threshold - Map 0-1 to range 1-100
-        local threshold = math.floor(1 + value * 99)
-        setParameter(algorithm, self.parameterOffset + 9, threshold)
+        -- Now controls Bit Depth (CV) - Map 0-1 to range 2-16
+        local bitDepth = math.floor(2 + value * 14)
+        setParameter(algorithm, self.parameterOffset + 7, bitDepth)
     end,
 
     pot3Turn = function(self, value)
@@ -567,12 +567,13 @@ return {
         -- Draw parameters section
         local textX = 140
         local textY = 25
-        drawTinyText(textX, textY, "CV Seq: " .. voltIdx .. "/" .. NUM_SEQUENCES)
-        drawTinyText(textX, textY + 8,
+        drawTinyText(textX, textY,
                      "Gate Seq: " .. gateIdx .. "/" .. NUM_SEQUENCES)
-        drawTinyText(textX, textY + 16, "Bit Depth: " .. self.parameters[7])
-        drawTinyText(textX, textY + 24,
+        drawTinyText(textX, textY + 8,
                      "Threshold: " .. self.parameters[9] .. "%")
+        drawTinyText(textX, textY + 16,
+                     "CV Seq: " .. voltIdx .. "/" .. NUM_SEQUENCES)
+        drawTinyText(textX, textY + 24, "Bit Depth: " .. self.parameters[7])
 
         -- Draw Persistent Favorites Stack
         local favStackX = 204 -- Moved right 4 pixels (smaller on the left)
@@ -666,7 +667,7 @@ return {
                         local gateColor = 5 -- Dim color for off steps
                         -- Check if the step data exists in the global sequence before accessing
                         if favGateSeq.steps[stepIdx] and
-                            favGateSeq.steps[stepIdx] >= favThreshold then
+                            favGateSeq.steps[stepIdx] <= favThreshold then
                             gateColor = 15 -- Bright color for on steps
                         end
                         -- Ensure end >= start for drawing
@@ -683,6 +684,9 @@ return {
                                                                  favParams[4],
                                                                  favParams[5],
                                                                  favParams[6]) -- Use saved range params
+                    local favResolutionBits = favParams[7] -- Use saved bit depth
+                    local favRangeEffective = favEffectiveMax - favEffectiveMin
+
                     for s = 1, miniSteps do
                         local stepIdx = ((s - 1) % favNumVolt) + 1
                         local miniX = favStackX + 1 + (s - 1) * miniBlockWidth
@@ -690,7 +694,7 @@ return {
                         local raw = favVoltSeq.steps[stepIdx] -- Access step data from global sequence
                         local cvColor = 1 -- Default color if raw is nil or sequence missing
                         if raw then
-                            local voltage
+                            local voltage -- Unquantized voltage
                             -- Use saved polarity param (favParams[6])
                             if favParams[6] == 2 then -- Bipolar
                                 voltage =
@@ -708,9 +712,19 @@ return {
                                         (favEffectiveMax - favEffectiveMin) +
                                         favEffectiveMin
                             end
-                            local norm =
-                                (voltage - favEffectiveMin) /
-                                    (favEffectiveMax - favEffectiveMin)
+
+                            -- Quantize the voltage using saved params
+                            local quantizedVoltage =
+                                quantizeVoltage(voltage, favResolutionBits,
+                                                favEffectiveMin, favEffectiveMax)
+
+                            -- Calculate normalized value based on quantized voltage
+                            local norm = 0
+                            if favRangeEffective ~= 0 then
+                                norm = (quantizedVoltage - favEffectiveMin) /
+                                           favRangeEffective
+                            end
+
                             if norm < 0 then
                                 norm = 0
                             elseif norm > 1 then
@@ -756,7 +770,7 @@ return {
             if drawEndX < drawStartX then drawEndX = drawStartX end
 
             -- Draw the block
-            if gateSeq.steps[i] >= self.parameters[9] then
+            if gateSeq.steps[i] <= self.parameters[9] then
                 drawRectangle(drawStartX, gateY, drawEndX,
                               gateY + gateBlockHeight - 2, 15) -- Adjusted block height
             else
@@ -783,6 +797,9 @@ return {
         local effectiveMin, effectiveMax =
             getEffectiveRange(self.parameters[4], self.parameters[5],
                               self.parameters[6])
+        local resolutionBits = self.parameters[7] -- Get current bit depth
+        local rangeEffective = effectiveMax - effectiveMin -- Calculate range
+
         for i = 1, numVolt do
             local currentX = startX + (i - 1) * voltBlockWidthFloat
             local nextX = startX + i * voltBlockWidthFloat
@@ -793,7 +810,7 @@ return {
             if drawEndX < drawStartX then drawEndX = drawStartX end
 
             local raw = voltSeq.steps[i]
-            local voltage
+            local voltage -- Unquantized voltage
             if self.parameters[6] == 2 then
                 voltage =
                     (raw + 32768) / 65535 * (effectiveMax - effectiveMin) +
@@ -805,8 +822,17 @@ return {
                 voltage = ((raw > 0 and 0 or raw) + 32768) / 32768 *
                               (effectiveMax - effectiveMin) + effectiveMin
             end
-            local norm = (voltage - effectiveMin) /
-                             (effectiveMax - effectiveMin)
+
+            -- Quantize the voltage using current params
+            local quantizedVoltage = quantizeVoltage(voltage, resolutionBits,
+                                                     effectiveMin, effectiveMax)
+
+            -- Calculate normalized value based on quantized voltage
+            local norm = 0
+            if rangeEffective ~= 0 then
+                norm = (quantizedVoltage - effectiveMin) / rangeEffective
+            end
+
             if norm < 0 then norm = 0 end
             if norm > 1 then norm = 1 end
             local colorIndex = math.floor(norm * 14) + 1

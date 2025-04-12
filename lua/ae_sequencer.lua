@@ -41,6 +41,17 @@ local favorites = {nil, nil, nil, nil} -- Stores parameter snapshots
 local voltageSequences = {}
 local gateSequences = {}
 
+-- Helper function to calculate the effective step index based on slide
+local function getEffectiveIndex(currentIndex, numSteps, slidePercent)
+    if numSteps <= 0 then return currentIndex end -- Avoid division by zero
+    local slideAmount = math.floor(numSteps * (slidePercent / 100.0))
+    -- Calculate the effective index using modulo arithmetic
+    -- Ensure the result is 1-based index
+    local effectiveIndex = (currentIndex - 1 - slideAmount + numSteps) %
+                               numSteps + 1
+    return effectiveIndex
+end
+
 -- Generate a random 16-bit raw value in the range [-32768, 32767]
 local function generateRandomRawValue() return math.random(-32768, 32767) end
 
@@ -79,8 +90,20 @@ local function quantizeVoltage(value, resolutionBits, effectiveMin, effectiveMax
 end
 
 -- Update the cached voltage for the current step by mapping the raw value.
-local function updateVoltageCached(seq, resolution, minV, maxV, polarity)
-    local raw = seq.steps[seq.currentStep]
+local function updateVoltageCached(seq, resolution, minV, maxV, polarity,
+                                   slidePercent) -- Added slidePercent
+    local numSteps = seq.stepCount
+    local effectiveStep = getEffectiveIndex(seq.currentStep, numSteps,
+                                            slidePercent)
+    local raw = seq.steps[effectiveStep] -- Use effectiveStep index
+    if raw == nil then
+        -- Handle potential nil value if sequence data is inconsistent
+        -- This can happen if stepCount changes before steps table is fully populated/resized
+        -- or if effectiveStep calculation results in an index temporarily out of bounds
+        -- during sequence modifications. Setting to 0 is a safe fallback.
+        seq.cachedVoltage = 0
+        return
+    end
     local effectiveMin, effectiveMax = getEffectiveRange(minV, maxV, polarity)
     local fraction
     if polarity == 2 then
@@ -110,7 +133,7 @@ local function initSequences()
             for j = 1, MAX_STEPS do
                 voltageSequences[i].steps[j] = generateRandomRawValue()
             end
-            updateVoltageCached(voltageSequences[i], 16, -1, 1, 2)
+            updateVoltageCached(voltageSequences[i], 16, -1, 1, 2, 0)
 
             gateSequences[i] = {
                 stepIndex = 1,
@@ -131,7 +154,7 @@ local function globalRandomize(self)
         randomizeVoltageSequence(voltageSequences[i])
         updateVoltageCached(voltageSequences[i], self.parameters[7],
                             self.parameters[4], self.parameters[5],
-                            self.parameters[6])
+                            self.parameters[6], self.parameters[11]) -- Pass slide
         randomizeGateSequence(gateSequences[i])
     end
 end
@@ -163,6 +186,8 @@ return {
     author = "Andras Eichstaedt / Thorinside / 4o",
 
     init = function(self)
+        local NUM_PARAMS = 11 -- Updated parameter count
+
         if self.state then
             -- Restore state if available (moved from deserialise)
             local state = self.state -- Use the state provided in self
@@ -171,14 +196,20 @@ return {
             if state.parameters then
                 -- Initialize self.parameters table if it doesn't exist (shouldn't happen ideally, but safe)
                 if not self.parameters then self.parameters = {} end
-                for i = 1, #state.parameters do
-                    self.parameters[i] = state.parameters[i]
+                -- Use NUM_PARAMS to ensure we load/initialize the correct number
+                for i = 1, NUM_PARAMS do
+                    -- Load from state if available, otherwise initialize to default from return structure
+                    self.parameters[i] =
+                        state.parameters[i] or ({
+                            1, 1, 8, -1, 1, 2, 16, 16, 50, 100, 0 -- Add default for slide
+                        })[i]
                 end
             else
                 -- If no parameters in state, we need some defaults before returning the structure
-                -- Ideally, the environment guarantees parameters or we load defaults here.
-                -- For now, assume if state exists, parameters exist.
-                -- If not, the later 'return' structure provides defaults for the environment.
+                -- Initialize with all defaults if parameters key is missing
+                self.parameters = {
+                    1, 1, 8, -1, 1, 2, 16, 16, 50, 100, 0 -- Add default for slide
+                }
             end
 
             -- Restore voltage sequences
@@ -201,7 +232,8 @@ return {
                 if voltageSequences[voltIdx] then -- Check sequence exists
                     updateVoltageCached(voltageSequences[voltIdx],
                                         self.parameters[7], self.parameters[4],
-                                        self.parameters[5], self.parameters[6])
+                                        self.parameters[5], self.parameters[6],
+                                        self.parameters[11]) -- Pass slide
                     lastActiveVoltIndex = voltIdx -- Update the tracker
                 end
             else
@@ -257,11 +289,13 @@ return {
             -- Initialize self.parameters with defaults if state wasn't loaded
             -- The return structure below defines defaults, but let's ensure self.parameters exists
             -- Note: initSequences() doesn't touch self.parameters
-            self.parameters = {1, 1, 8, -1, 1, 2, 16, 16, 50, 100} -- Default values matching the return structure
+            self.parameters = {
+                1, 1, 8, -1, 1, 2, 16, 16, 50, 100, 0 -- Default values including slide
+            } -- Default values matching the return structure
             -- Update cache for default sequence 1
             updateVoltageCached(voltageSequences[1], self.parameters[7],
                                 self.parameters[4], self.parameters[5],
-                                self.parameters[6])
+                                self.parameters[6], self.parameters[11]) -- Pass slide
             lastActiveVoltIndex = 1
         end
 
@@ -285,7 +319,8 @@ return {
                 {"Bit Depth (CV)", 2, 16, 16, kInt}, -- Default: 16
                 {"Gate Steps", 1, MAX_STEPS, 16, kInt}, -- Default: 16
                 {"Threshold", 1, 100, 50, kPercent}, -- Default: 50
-                {"Gate Length", 5, 1000, 100, kMs} -- Default: 100ms
+                {"Gate Length", 5, 1000, 100, kMs}, -- Default: 100ms
+                {"Slide", 0, 100, 0, kPercent} -- New Slide parameter
             }
         }
     end,
@@ -293,6 +328,7 @@ return {
     gate = function(self, input, rising)
         local voltIdx = self.parameters[1]
         local gateIdx = self.parameters[2]
+        local slidePercent = self.parameters[11] -- Get slide value
 
         -- Check if a favorite is queued and sequences are at step 1
         if queuedFavorite ~= nil then
@@ -312,6 +348,9 @@ return {
                         self.parameters[i] = snapshot.parameters[i]
                     end
 
+                    -- Update slidePercent in case it was loaded from the favorite
+                    slidePercent = self.parameters[11]
+
                     -- Update cached state based on restored parameters and the *new* active sequence index
                     local restoredVoltIdx = self.parameters[1] -- Get index from restored params
                     lastActiveVoltIndex = restoredVoltIdx -- Update tracker
@@ -320,7 +359,7 @@ return {
                                             self.parameters[7],
                                             self.parameters[4],
                                             self.parameters[5],
-                                            self.parameters[6]) -- Use restored params
+                                            self.parameters[6], slidePercent) -- Use restored params including slide
                     end
 
                     -- Update voltIdx and gateIdx in case they were changed by loading the favorite
@@ -346,7 +385,8 @@ return {
                 voltSeq.currentStep = 1
             end
             updateVoltageCached(voltSeq, self.parameters[7], self.parameters[4],
-                                self.parameters[5], self.parameters[6])
+                                self.parameters[5], self.parameters[6],
+                                slidePercent) -- Pass slide
 
             -- Advance gate sequence.
             local gateSeq = gateSequences[gateIdx]
@@ -355,7 +395,13 @@ return {
             if gateSeq.stepIndex > gateSeq.numSteps then
                 gateSeq.stepIndex = 1
             end
-            if gateSeq.steps[gateSeq.stepIndex] <= self.parameters[9] then
+            -- Calculate effective gate index using slide
+            local effectiveGateIndex = getEffectiveIndex(gateSeq.stepIndex,
+                                                         gateSeq.numSteps,
+                                                         slidePercent)
+            -- Check threshold using effective index
+            if gateSeq.steps[effectiveGateIndex] and -- Check if step exists before accessing
+                gateSeq.steps[effectiveGateIndex] <= self.parameters[9] then
                 gateSeq.gateRemainingSteps = self.parameters[10]
             end
         end
@@ -364,23 +410,34 @@ return {
     trigger = function(self, input)
         local voltIdx = self.parameters[1]
         local gateIdx = self.parameters[2]
+        local slidePercent = self.parameters[11] -- Get slide value
         if input == 2 then
             -- Reset active voltage sequence.
             voltageSequences[voltIdx].currentStep = 1
             updateVoltageCached(voltageSequences[voltIdx], self.parameters[7],
                                 self.parameters[4], self.parameters[5],
-                                self.parameters[6])
+                                self.parameters[6], slidePercent) -- Pass slide
             -- Reset active gate sequence.
             gateSequences[gateIdx].stepIndex = 1
         elseif input == 3 then
             -- Global randomize all sequences.
             globalRandomize(self)
+            -- The globalRandomize function now handles updating cache with slide
+            -- but we still need to ensure the *currently selected* sequence's cache
+            -- is updated immediately after randomization, in case it wasn't the last one updated.
+            if voltageSequences[voltIdx] then
+                updateVoltageCached(voltageSequences[voltIdx],
+                                    self.parameters[7], self.parameters[4],
+                                    self.parameters[5], self.parameters[6],
+                                    slidePercent) -- Pass slide
+            end
         end
     end,
 
     step = function(self, dt, inputs)
         local voltIdx = self.parameters[1]
         local gateIdx = self.parameters[2]
+        local slidePercent = self.parameters[11] -- Get slide value
 
         -- Check if pot 3 was just pushed to queue a favorite
         if self.pot3JustPushed then
@@ -399,7 +456,7 @@ return {
             lastActiveVoltIndex = voltIdx
             updateVoltageCached(voltageSequences[voltIdx], self.parameters[7],
                                 self.parameters[4], self.parameters[5],
-                                self.parameters[6])
+                                self.parameters[6], slidePercent) -- Pass slide
         end
 
         OUTPUT_BUFFER[1] = voltageSequences[lastActiveVoltIndex].cachedVoltage -- Use lastActiveVoltIndex
@@ -483,7 +540,11 @@ return {
 
     encoder2Push = function(self)
         -- Save current *parameters*, managing favorites like a 4-slot stack
-        local currentState = {parameters = deepcopy(self.parameters)}
+        local currentState = {parameters = {}}
+        -- Copy all parameters, including the new 'Slide' parameter
+        for i = 1, #self.parameters do
+            currentState.parameters[i] = self.parameters[i]
+        end
 
         local saved = false
         -- Try to save in the first empty slot
@@ -514,7 +575,7 @@ return {
             favorites = {}
         }
 
-        -- Save all parameters
+        -- Save all parameters, including the new slide parameter
         for i = 1, #self.parameters do
             state.parameters[i] = self.parameters[i]
         end
@@ -560,13 +621,14 @@ return {
         ensureInitialized(self)
         local voltIdx = self.parameters[1]
         local gateIdx = self.parameters[2]
+        local slidePercent = self.parameters[11] -- Still need this for calculations
 
         -- Draw title and info
         drawTinyText(8, 10, "AE Sequencer")
 
-        -- Draw parameters section
+        -- Draw parameters section (Moved down 5px)
         local textX = 140
-        local textY = 25
+        local textY = 30 -- Changed from 25 to 30
         drawTinyText(textX, textY,
                      "Gate Seq: " .. gateIdx .. "/" .. NUM_SEQUENCES)
         drawTinyText(textX, textY + 8,
@@ -575,102 +637,88 @@ return {
                      "CV Seq: " .. voltIdx .. "/" .. NUM_SEQUENCES)
         drawTinyText(textX, textY + 24, "Bit Depth: " .. self.parameters[7])
 
-        -- Draw Persistent Favorites Stack
-        local favStackX = 204 -- Moved right 4 pixels (smaller on the left)
-        local favStackY = 17 -- Moved down 2 pixels
+        -- Draw Persistent Favorites Stack (Moved up 3px)
+        local favStackX = 204
+        local favStackY = 14 -- Changed from 17 to 14
         local favHeight = 8
-        local favWidth = 253 - favStackX -- Calculate width for 2px right margin (255 - 2 - favStackX)
+        local favWidth = 253 - favStackX
         local favGap = 2
 
         for i = 1, 4 do
             local currentY = favStackY + (i - 1) * (favHeight + favGap)
             local snapshot = favorites[i]
-            local borderColor = 8 -- Default border
+            local borderColor = 8
             local isEmpty = (snapshot == nil)
-            local bgColor
+            local bgColor = isEmpty and 2 or 5
 
-            if isEmpty then
-                bgColor = 2 -- Set background to 2 for empty slots
-            else
-                bgColor = 5 -- Slightly brighter default bg for saved slots
-            end
-
-            -- Draw selection indicator for the currently selected slot *only if nothing is queued*
+            -- Selection/Queue indicators (unchanged)
             if i == selectedFavoriteSlot then
-                borderColor = 15 -- Highlight selected slot border
-                -- Draw the indicator SOLID white if nothing is queued
+                borderColor = 15
                 if queuedFavorite == nil then
-                    local indicatorColor = 15 -- Solid white
-                    local indicatorX1 = favStackX - 4
+                    local indicatorColor = 15
+                    local indicatorX1 = favStackX - 4;
                     local indicatorY1 = currentY
-                    local indicatorX2 = favStackX - 2
+                    local indicatorX2 = favStackX - 2;
                     local indicatorY2 = currentY + favHeight - 1
                     drawRectangle(indicatorX1, indicatorY1, indicatorX2,
-                                  indicatorY2, indicatorColor) -- Use solid white
+                                  indicatorY2, indicatorColor)
                 end
             end
-
-            -- Handle queued favorite indicator (flashing line)
             if i == queuedFavorite then
-                -- Indicate queued favorite (works even if empty, though queueing empty is prevented)
-                borderColor = 15 -- Keep border highlighted
-                -- Draw the indicator rectangle, alternating color with blinkToggle
-                local indicatorColor = self.blinkToggle and 15 or 2 -- Alternate color (white/bg)
-                local indicatorX1 = favStackX - 4
+                borderColor = 15
+                local indicatorColor = self.blinkToggle and 15 or 2
+                local indicatorX1 = favStackX - 4;
                 local indicatorY1 = currentY
-                local indicatorX2 = favStackX - 2
+                local indicatorX2 = favStackX - 2;
                 local indicatorY2 = currentY + favHeight - 1
                 drawRectangle(indicatorX1, indicatorY1, indicatorX2,
-                              indicatorY2, indicatorColor) -- Use alternating color
+                              indicatorY2, indicatorColor)
             end
 
-            -- Draw background and border for the slot
+            -- Slot border/background (unchanged)
             drawRectangle(favStackX, currentY, favStackX + favWidth,
-                          currentY + favHeight, bgColor) -- Background (filled)
-            -- Draw border using drawLine
+                          currentY + favHeight, bgColor)
             local bx1, by1 = favStackX - 1, currentY - 1
             local bx2, by2 = favStackX + favWidth + 1, currentY + favHeight + 1
-            drawLine(bx1, by1, bx2, by1, borderColor) -- Top
-            drawLine(bx1, by2, bx2, by2, borderColor) -- Bottom
-            drawLine(bx1, by1, bx1, by2, borderColor) -- Left
-            drawLine(bx2, by1, bx2, by2, borderColor) -- Right
+            drawLine(bx1, by1, bx2, by1, borderColor);
+            drawLine(bx1, by2, bx2, by2, borderColor)
+            drawLine(bx1, by1, bx1, by2, borderColor);
+            drawLine(bx2, by1, bx2, by2, borderColor)
 
-            if isEmpty then
-                -- Keep drawing background/border, but no text needed for empty
-            else
-                -- Restore the two-row graphical representation
-                local miniSteps = 8 -- Represent 8 steps
+            if not isEmpty then
+                -- Mini pattern drawing logic (KEEP effective index calculations)
+                local miniSteps = 8
                 local miniBlockHeight = 3
-                local miniGap = 0 -- No gap between rows needed if height is 3 in 8px total
                 local miniGateY = currentY + 1
-                local miniCvY = currentY + 1 + miniBlockHeight + miniGap
+                local miniCvY = currentY + 1 + miniBlockHeight -- Removed miniGap
 
                 local favParams = snapshot.parameters
-                local favCvIdx = favParams[1]
+                local favSlidePercent = favParams[11] or 0 -- Use slide from snapshot
+                local favCvIdx = favParams[1];
                 local favGateIdx = favParams[2]
-                local favThreshold = favParams[9] -- Use saved threshold
-                local favNumGate = favParams[8] -- Use saved gate steps param
-                local favNumVolt = favParams[3] -- Use saved CV steps param
+                local favThreshold = favParams[9];
+                local favNumGate = favParams[8]
+                local favNumVolt = favParams[3]
 
-                -- Access the GLOBAL sequence tables using indices from the snapshot
                 local favVoltSeq = voltageSequences[favCvIdx]
                 local favGateSeq = gateSequences[favGateIdx]
 
                 if favVoltSeq and favGateSeq then
                     local miniBlockWidth = favWidth / miniSteps
 
-                    -- Mini Gate Pattern (Top Row)
+                    -- Mini Gate Pattern (Top Row) - Use effective index
                     for s = 1, miniSteps do
-                        local stepIdx = ((s - 1) % favNumGate) + 1
+                        local displayIndex = s
+                        local effectiveStepIndex = getEffectiveIndex(
+                                                       displayIndex, favNumGate,
+                                                       favSlidePercent)
                         local miniX = favStackX + 1 + (s - 1) * miniBlockWidth
                         local miniEndX = miniX + miniBlockWidth - 1
-                        local gateColor = 5 -- Dim color for off steps
-                        -- Check if the step data exists in the global sequence before accessing
-                        if favGateSeq.steps[stepIdx] and
-                            favGateSeq.steps[stepIdx] <= favThreshold then
-                            gateColor = 15 -- Bright color for on steps
+                        local gateColor = 5
+                        if favGateSeq.steps[effectiveStepIndex] and
+                            favGateSeq.steps[effectiveStepIndex] <= favThreshold then
+                            gateColor = 15
                         end
-                        -- Ensure end >= start for drawing
                         if miniEndX < miniX then
                             miniEndX = miniX
                         end
@@ -679,60 +727,52 @@ return {
                                       miniGateY + miniBlockHeight - 1, gateColor)
                     end
 
-                    -- Mini CV Pattern (Bottom Row)
+                    -- Mini CV Pattern (Bottom Row) - Use effective index
                     local favEffectiveMin, favEffectiveMax = getEffectiveRange(
                                                                  favParams[4],
                                                                  favParams[5],
-                                                                 favParams[6]) -- Use saved range params
-                    local favResolutionBits = favParams[7] -- Use saved bit depth
+                                                                 favParams[6])
+                    local favResolutionBits = favParams[7]
                     local favRangeEffective = favEffectiveMax - favEffectiveMin
 
                     for s = 1, miniSteps do
-                        local stepIdx = ((s - 1) % favNumVolt) + 1
+                        local displayIndex = s
+                        local effectiveStepIndex = getEffectiveIndex(
+                                                       displayIndex, favNumVolt,
+                                                       favSlidePercent)
                         local miniX = favStackX + 1 + (s - 1) * miniBlockWidth
                         local miniEndX = miniX + miniBlockWidth - 1
-                        local raw = favVoltSeq.steps[stepIdx] -- Access step data from global sequence
-                        local cvColor = 1 -- Default color if raw is nil or sequence missing
+                        local raw = favVoltSeq.steps[effectiveStepIndex] -- Use effective index
+                        local cvColor = 1
                         if raw then
-                            local voltage -- Unquantized voltage
-                            -- Use saved polarity param (favParams[6])
-                            if favParams[6] == 2 then -- Bipolar
+                            local voltage -- Calculate unquantized voltage (code omitted for brevity, same as before)
+                            if favParams[6] == 2 then
                                 voltage =
                                     (raw + 32768) / 65535 *
                                         (favEffectiveMax - favEffectiveMin) +
                                         favEffectiveMin
-                            elseif favParams[6] == 1 then -- Positive
+                            elseif favParams[6] == 1 then
                                 voltage =
                                     (raw < 0 and 0 or raw) / 32767 *
                                         (favEffectiveMax - favEffectiveMin) +
                                         favEffectiveMin
-                            else -- Negative
+                            else
                                 voltage =
                                     ((raw > 0 and 0 or raw) + 32768) / 32768 *
                                         (favEffectiveMax - favEffectiveMin) +
                                         favEffectiveMin
                             end
-
-                            -- Quantize the voltage using saved params
                             local quantizedVoltage =
                                 quantizeVoltage(voltage, favResolutionBits,
                                                 favEffectiveMin, favEffectiveMax)
-
-                            -- Calculate normalized value based on quantized voltage
                             local norm = 0
                             if favRangeEffective ~= 0 then
                                 norm = (quantizedVoltage - favEffectiveMin) /
                                            favRangeEffective
                             end
-
-                            if norm < 0 then
-                                norm = 0
-                            elseif norm > 1 then
-                                norm = 1
-                            end
+                            norm = math.max(0, math.min(1, norm))
                             cvColor = math.floor(norm * 14) + 1
                         end
-                        -- Ensure end >= start for drawing
                         if miniEndX < miniX then
                             miniEndX = miniX
                         end
@@ -741,110 +781,105 @@ return {
                                       miniCvY + miniBlockHeight - 1, cvColor)
                     end
                 else
-                    -- Draw placeholder if sequence data is missing for the saved index
                     drawTinyText(favStackX + 2, currentY + 1, "idx err")
                 end
             end
         end
 
         -- Calculate maximum available width for sequence displays
-        local availableWidth = textX - 13 -- 8px left margin + 5px right margin
+        local availableWidth = textX - 13
 
-        -- Draw gate sequence visualization
+        -- Draw gate sequence visualization - Reverted Y position, keep effective index
         local gateSeq = gateSequences[gateIdx]
         local numGate = self.parameters[8]
-        local gateBlockWidthFloat = availableWidth / numGate -- Use floating point for precise width
-        local gateBlockHeight = 10 -- Fixed height
-        local gateY = 25
-        local startX = 8.0 -- Use float for start position
+        local gateBlockWidthFloat = availableWidth / numGate
+        local gateBlockHeight = 10
+        local gateY = 25 -- Reverted Y position
+        local startX = 8.0
 
-        drawTinyText(8, gateY - 2, "Gate Pattern")
+        drawTinyText(startX, gateY - 2, "Gate Pattern") -- Reverted Y adjustment
 
         for i = 1, numGate do
+            local effectiveIndex = getEffectiveIndex(i, numGate, slidePercent) -- Keep this
             local currentX = startX + (i - 1) * gateBlockWidthFloat
             local nextX = startX + i * gateBlockWidthFloat
-            local drawStartX = math.floor(currentX)
-            local drawEndX = math.floor(nextX - 1) -- Leave 1px gap
-
-            -- Ensure minimum width of 1px for drawing
+            local drawStartX = math.floor(currentX);
+            local drawEndX = math.floor(nextX - 1)
             if drawEndX < drawStartX then drawEndX = drawStartX end
 
-            -- Draw the block
-            if gateSeq.steps[i] <= self.parameters[9] then
-                drawRectangle(drawStartX, gateY, drawEndX,
-                              gateY + gateBlockHeight - 2, 15) -- Adjusted block height
-            else
-                drawRectangle(drawStartX, gateY, drawEndX,
-                              gateY + gateBlockHeight - 2, 3) -- Adjusted block height
+            local gateColor = 3
+            if gateSeq.steps[effectiveIndex] and gateSeq.steps[effectiveIndex] <=
+                self.parameters[9] then -- Keep using effectiveIndex
+                gateColor = 15
             end
-            -- If this is the active gate step, draw a 2px high white line below the block
+            drawRectangle(drawStartX, gateY, drawEndX,
+                          gateY + gateBlockHeight - 2, gateColor)
+
+            -- Indicator still tracks raw index
             if i == gateSeq.stepIndex then
-                local lineY1 = gateY + gateBlockHeight - 1
+                local lineY1 = gateY + gateBlockHeight - 1;
                 local lineY2 = gateY + gateBlockHeight
-                drawRectangle(drawStartX, lineY1, drawEndX, lineY2, 15) -- White line indicator
+                drawRectangle(drawStartX, lineY1, drawEndX, lineY2, 15)
             end
         end
 
-        -- Draw voltage sequence visualization
+        -- Draw voltage sequence visualization - Reverted Y position, keep effective index
         local voltSeq = voltageSequences[voltIdx]
         local numVolt = self.parameters[3]
-        local voltBlockWidthFloat = availableWidth / numVolt -- Use floating point for precise width
-        local voltBlockHeight = 10 -- Fixed height
-        local voltY = 45
+        local voltBlockWidthFloat = availableWidth / numVolt
+        local voltBlockHeight = 10
+        local voltY = 45 -- Reverted Y position
 
-        drawTinyText(8, voltY - 2, "CV Pattern")
+        drawTinyText(startX, voltY - 2, "CV Pattern") -- Reverted Y adjustment
 
         local effectiveMin, effectiveMax =
             getEffectiveRange(self.parameters[4], self.parameters[5],
                               self.parameters[6])
-        local resolutionBits = self.parameters[7] -- Get current bit depth
-        local rangeEffective = effectiveMax - effectiveMin -- Calculate range
+        local resolutionBits = self.parameters[7]
+        local rangeEffective = effectiveMax - effectiveMin
 
         for i = 1, numVolt do
+            local effectiveIndex = getEffectiveIndex(i, numVolt, slidePercent) -- Keep this
             local currentX = startX + (i - 1) * voltBlockWidthFloat
             local nextX = startX + i * voltBlockWidthFloat
-            local drawStartX = math.floor(currentX)
-            local drawEndX = math.floor(nextX - 1) -- Leave 1px gap
-
-            -- Ensure minimum width of 1px for drawing
+            local drawStartX = math.floor(currentX);
+            local drawEndX = math.floor(nextX - 1)
             if drawEndX < drawStartX then drawEndX = drawStartX end
 
-            local raw = voltSeq.steps[i]
-            local voltage -- Unquantized voltage
-            if self.parameters[6] == 2 then
-                voltage =
-                    (raw + 32768) / 65535 * (effectiveMax - effectiveMin) +
-                        effectiveMin
-            elseif self.parameters[6] == 1 then
-                voltage = (raw < 0 and 0 or raw) / 32767 *
-                              (effectiveMax - effectiveMin) + effectiveMin
-            elseif self.parameters[6] == 3 then
-                voltage = ((raw > 0 and 0 or raw) + 32768) / 32768 *
-                              (effectiveMax - effectiveMin) + effectiveMin
+            local raw = voltSeq.steps[effectiveIndex] -- Keep using effectiveIndex
+            local colorIndex = 1
+
+            if raw then
+                local voltage -- Calculate unquantized voltage (code omitted, same as before)
+                if self.parameters[6] == 2 then
+                    voltage = (raw + 32768) / 65535 *
+                                  (effectiveMax - effectiveMin) + effectiveMin
+                elseif self.parameters[6] == 1 then
+                    voltage = (raw < 0 and 0 or raw) / 32767 *
+                                  (effectiveMax - effectiveMin) + effectiveMin
+                else
+                    voltage = ((raw > 0 and 0 or raw) + 32768) / 32768 *
+                                  (effectiveMax - effectiveMin) + effectiveMin
+                end
+                local quantizedVoltage =
+                    quantizeVoltage(voltage, resolutionBits, effectiveMin,
+                                    effectiveMax)
+                local norm = 0
+                if rangeEffective ~= 0 then
+                    norm = (quantizedVoltage - effectiveMin) / rangeEffective
+                end
+                norm = math.max(0, math.min(1, norm))
+                colorIndex = math.floor(norm * 14) + 1
             end
 
-            -- Quantize the voltage using current params
-            local quantizedVoltage = quantizeVoltage(voltage, resolutionBits,
-                                                     effectiveMin, effectiveMax)
-
-            -- Calculate normalized value based on quantized voltage
-            local norm = 0
-            if rangeEffective ~= 0 then
-                norm = (quantizedVoltage - effectiveMin) / rangeEffective
-            end
-
-            if norm < 0 then norm = 0 end
-            if norm > 1 then norm = 1 end
-            local colorIndex = math.floor(norm * 14) + 1
-
-            -- Draw the block
             drawRectangle(drawStartX, voltY, drawEndX,
-                          voltY + voltBlockHeight - 2, colorIndex) -- Adjusted block height
-            -- If this is the active CV step, draw a 2px high white line below the block
+                          voltY + voltBlockHeight - 2, colorIndex)
+
+            -- Indicator still tracks raw index
             if i == voltSeq.currentStep then
-                local lineY1 = voltY + voltBlockHeight - 1
+                local lineY1 = voltY + voltBlockHeight - 1;
                 local lineY2 = voltY + voltBlockHeight
-                drawRectangle(drawStartX, lineY1, drawEndX, lineY2, 15) -- White line indicator
+                drawRectangle(drawStartX, lineY1, drawEndX, lineY2, 15)
             end
         end
         return true

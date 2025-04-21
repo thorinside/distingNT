@@ -64,19 +64,6 @@ local RootNoteNames = {
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
 }
 
--- Simple Linear Congruential Generator (LCG) for deterministic "randomness"
--- Used to derive probabilities from a seed parameter without affecting math.random
-local function lcg(seed)
-    local a = 1664525
-    local c = 1013904223
-    local m = 2 ^ 32 -- 4294967296
-    local current_seed = seed % m -- Ensure seed is within range
-    return function()
-        current_seed = (a * current_seed + c) % m
-        return current_seed / m -- Return value between 0 and 1
-    end
-end
-
 -- Default scale: C major (semitone offsets)
 -- LSystemSequencer.default_scale = {0, 2, 4, 5, 7, 9, 11} -- No longer used directly
 
@@ -89,8 +76,8 @@ end
 function LSystemSequencer:weighted_choice(tbl)
     local total, acc = 0, 0
     for _, w in pairs(tbl) do total = total + w end
-    -- Use the stored generator instead of math.random
-    local r = (self.rand_gen and self.rand_gen() or math.random()) * total
+    -- Use math.random() instead of the custom LCG
+    local r = math.random() * total
     for k, w in pairs(tbl) do
         acc = acc + w
         if r <= acc then return k end
@@ -105,12 +92,9 @@ function LSystemSequencer:weighted_step()
 end
 
 -- Triangular‑ish random number between a & b (closer to middle on average)
--- Now a method using the stored deterministic generator
-function LSystemSequencer:triangular_rand(a, b)
+local function triangular_rand(a, b)
     -- Sum of two uniforms gives triangular PDF
-    -- Use the stored generator instead of math.random
-    local u = (self.rand_gen and self.rand_gen() or math.random()) +
-                  (self.rand_gen and self.rand_gen() or math.random())
+    local u = math.random() + math.random()
     return a + (b - a) * u * 0.5 -- scale to [0,1], peak at centre
 end
 
@@ -150,7 +134,6 @@ function LSystemSequencer.new(config)
         V = function(seq) return seq:weighted_choice(seq.probabilities.V) end
     }
     -- Store the initial generator based on config or default seed (will be overwritten by _update_sequencer_config in init)
-    self.rand_gen = lcg(config.probability_seed or 42)
 
     ------------------------------------------------------------------
     -- Expand axiom for N iterations
@@ -219,17 +202,14 @@ function LSystemSequencer.new(config)
                 local min_d, max_d = unpack(self.duration_range)
                 local mid_d = (min_d + max_d) * 0.5
                 local choices = {min_d, mid_d, max_d}
-                -- Use stored generator to pick index
-                local idx = math.floor((self.rand_gen and self.rand_gen() or
-                                           math.random()) * #choices) + 1
-                duration = choices[math.max(1, math.min(idx, #choices))] -- Clamp index just in case
+                duration = choices[math.random(#choices)]
 
             elseif sym == "V" then
                 ------------------------------------------------------------------
                 -- Choose velocity with triangular distribution (natural feel)
                 ------------------------------------------------------------------
                 local vmin, vmax = unpack(self.velocity_range)
-                velocity = self:triangular_rand(vmin, vmax) -- Call as method
+                velocity = triangular_rand(vmin, vmax)
             end
         end
 
@@ -252,7 +232,7 @@ local ScoreDraw = {}
 --------------------------------------------------------------------------------
 local DEFAULTS = {
     -- Canvas dimensions
-    width = 256, -- total pixels horizontally
+    width = 255, -- total pixels horizontally
     height = 64, -- total pixels vertically
     left_margin = 8, -- px before the first staff line starts
     right_margin = 8, -- px after last note
@@ -465,13 +445,14 @@ end
 
 -- Helper function to update sequencer config based on parameters
 -- This is defined outside the returned table so it can be called by init and step
-local function _update_sequencer_config(self)
+local function _update_sequencer_config(self) -- Removed seed_changed parameter
     if not self.parameters or not self.param_indices or not self.sequencer then
         -- Not fully initialized yet
         return false -- Indicate no update was performed
     end
 
-    local needs_reinterpretation = false
+    local needs_reinterpretation_for_ranges = false -- Track if ranges changed
+    local needs_reexpansion_for_probs = false -- Track if probabilities changed requiring re-expansion
 
     -- 1. Velocity Range (Pot 1 / Macro)
     -- Macro controls the spread around a central point.
@@ -492,7 +473,7 @@ local function _update_sequencer_config(self)
     if self.sequencer.velocity_range[1] ~= new_vel_range[1] or
         self.sequencer.velocity_range[2] ~= new_vel_range[2] then
         self.sequencer.velocity_range = new_vel_range
-        needs_reinterpretation = true
+        needs_reinterpretation_for_ranges = true
     end
 
     -- 2. Duration Range (Pot 2 / Macro)
@@ -520,44 +501,43 @@ local function _update_sequencer_config(self)
     if self.sequencer.duration_range[1] ~= new_dur_range[1] or
         self.sequencer.duration_range[2] ~= new_dur_range[2] then
         self.sequencer.duration_range = new_dur_range
-        needs_reinterpretation = true
+        needs_reinterpretation_for_ranges = true
     end
 
-    -- 3. Probabilities (Pot 3 Seed)
-    local prob_seed = self.parameters[self.param_indices.probability_seed] -- 0 to 127 (or more)
-    local rand_gen = lcg(prob_seed) -- Create deterministic generator from seed
+    -- 3. Probabilities (Pot 3 Parameter - now direct control)
+    local prob_param_idx = self.param_indices.probability_mix -- Use renamed index
+    local prob_param_val = self.parameters[prob_param_idx] -- 0 to 127
+    local normalized_prob = prob_param_val / 127.0 -- Map to 0.0 - 1.0
 
-    local p_val = rand_gen() -- Generate first "random" number for P rule
-    local new_prob_p = {PRP = p_val, PV = 1.0 - p_val}
-
-    local r_val = rand_gen() -- Generate second "random" number for R rule
-    local new_prob_r = {RV = r_val, RR = 1.0 - r_val}
-
+    -- Apply this normalized value to both P and R rules for simplicity
+    local new_prob_p = {PRP = normalized_prob, PV = 1.0 - normalized_prob}
+    local new_prob_r = {RV = normalized_prob, RR = 1.0 - normalized_prob}
     local new_probabilities = {P = new_prob_p, R = new_prob_r, V = {VP = 1.0}} -- V is fixed
 
     -- Check if probabilities actually changed (deep compare needed)
     local probs_changed = false
-    if self.sequencer.probabilities.P.PRP ~= new_probabilities.P.PRP or
-        self.sequencer.probabilities.R.RV ~= new_probabilities.R.RV then
-        probs_changed = true
-    end
+    -- Handle initial call where probabilities might be nil
+    if not self.sequencer.probabilities or self.sequencer.probabilities.P.PRP ~=
+        new_probabilities.P.PRP or self.sequencer.probabilities.R.RV ~=
+        new_probabilities.R.RV then probs_changed = true end
 
     if probs_changed then
         self.sequencer.probabilities = new_probabilities
-        -- Rule change requires re-expansion, not just re-interpretation
+        -- Rule probability change requires re-expansion
         self.expanded = self.sequencer:expand()
-        needs_reinterpretation = true -- Re-interpretation follows re-expansion
+        needs_reexpansion_for_probs = true
     end
 
-    return needs_reinterpretation -- Return true if sequence needs regeneration
+    -- Return true if ranges changed OR probabilities led to re-expansion
+    return needs_reinterpretation_for_ranges or needs_reexpansion_for_probs
 end
 
 -- Helper function to randomize the sequence
 local function _randomize_sequence(self)
     print(self.name .. ": Randomizing sequence")
     -- Explicitly update the stored random generator based on current seed
-    local prob_seed = self.parameters[self.param_indices.probability_seed]
-    self.sequencer.rand_gen = lcg(prob_seed) -- Recreate the generator
+    -- local prob_seed = self.parameters[self.param_indices.probability_seed] -- REMOVED
+    -- self.sequencer.rand_gen = lcg(prob_seed) -- Recreate the generator -- REMOVED
 
     self.expanded = self.sequencer:expand()
     self.events = self.sequencer:interpret(self.expanded)
@@ -596,7 +576,7 @@ return {
         local initial_base_midi = 48 -- Default base MIDI note (C3)
         local initial_velocity_macro = 50 -- Default middle range
         local initial_duration_macro = 50 -- Default middle range
-        local initial_probability_seed = 42 -- Default seed
+        local initial_probability_mix = 64 -- Default mid-point (0.5 probability, 0-127 range)
 
         -- Access state loaded from preset (if serialise is used)
         if self.state then
@@ -610,8 +590,8 @@ return {
                                          initial_velocity_macro
             initial_duration_macro = self.state.duration_macro or
                                          initial_duration_macro
-            initial_probability_seed = self.state.probability_seed or
-                                           initial_probability_seed
+            initial_probability_mix = self.state.probability_mix or
+                                          initial_probability_mix -- Load saved mix value
             -- Note: We calculate base_midi from root_note_idx, don't need to save it directly
         end
 
@@ -623,7 +603,7 @@ return {
             scale = 3,
             velocity_macro = 4, -- New Pot 1
             duration_macro = 5, -- New Pot 2
-            probability_seed = 6, -- New Pot 3
+            probability_mix = 6, -- Renamed index for Pot 3
             randomize = 7 -- Moved to last
         }
 
@@ -637,8 +617,8 @@ return {
             initial_velocity_macro
         current_params[self.param_indices.duration_macro] =
             initial_duration_macro
-        current_params[self.param_indices.probability_seed] =
-            initial_probability_seed
+        current_params[self.param_indices.probability_mix] =
+            initial_probability_mix -- Use renamed index
         current_params[self.param_indices.randomize] = initial_randomize
         self.parameters = current_params -- Temporarily assign for helper
 
@@ -656,23 +636,30 @@ return {
             axiom = "P",
             iterations = initial_iterations,
             base_note = base_midi_note,
-            scale = selected_scale,
-            probability_seed = initial_probability_seed -- Pass seed to constructor
+            scale = selected_scale
+            -- probability_seed removed
             -- velocity_range, duration_range, probabilities will be set by helper
         }
         self.sequencer = LSystemSequencer.new(temp_config)
 
         -- Now call the helper to calculate and apply ranges/probabilities
-        -- This also calculates and stores the initial self.sequencer.rand_gen
-        _update_sequencer_config(self)
+        _update_sequencer_config(self) -- No longer needs seed_changed flag
 
-        -- Initial expansion and interpretation (uses the just-set rand_gen)
-        self.expanded = self.sequencer:expand()
+        -- Initial expansion and interpretation (uses the just-set rand_gen and probabilities)
         self.events = self.sequencer:interpret(self.expanded)
 
         -- Generate draw list and store mapping functions/options
-        self.drawlist, self.time2x, self.pitch2y, self.drawOpts =
-            ScoreDraw.generate(self.events)
+        if #self.events > 0 then -- Handle empty interpretation result
+            self.drawlist, self.time2x, self.pitch2y, self.drawOpts =
+                ScoreDraw.generate(self.events)
+        else
+            self.drawlist = {} -- Ensure drawlist is empty if no events
+            self.events = {} -- Ensure events is empty
+            -- Assign dummy functions/opts to avoid errors later if needed
+            self.time2x = function() return 0 end
+            self.pitch2y = function() return 0 end
+            self.drawOpts = {}
+        end
 
         -- Store name tables for use in draw function
         self.RootNoteNames = RootNoteNames
@@ -694,7 +681,7 @@ return {
 
             parameters = {
                 [self.param_indices.iterations] = {
-                    "Iterations", 1, 7, initial_iterations
+                    "Iterations", 1, 5, initial_iterations
                 },
                 [self.param_indices.root_note] = {
                     "Root Note", RootNoteNames, initial_root_note_idx
@@ -708,8 +695,8 @@ return {
                 [self.param_indices.duration_macro] = {
                     "Duration Macro", 0, 100, initial_duration_macro
                 },
-                [self.param_indices.probability_seed] = {
-                    "Probability Macro", 0, 127, initial_probability_seed -- Renamed parameter
+                [self.param_indices.probability_mix] = { -- Renamed parameter and index
+                    "Probability Mix", 0, 127, initial_probability_mix
                 },
                 [self.param_indices.randomize] = {
                     "Randomize", {"Off", "On"}, initial_randomize
@@ -730,10 +717,10 @@ return {
         --------------------------------------------------------------------
         -- Ignore any gate that isn't our clock on input #1
         --------------------------------------------------------------------
-        if input ~= 1 then return {} end
+        if input ~= 1 then return end
 
         -- Only act on the rising edge
-        if not rising then return {} end
+        if not rising then return end
 
         --------------------------------------------------------------------
         -- Check if Randomize parameter is On (index 4, value 2 = "On")
@@ -753,7 +740,7 @@ return {
         self.outState = self.outState or {0, 0, 0} -- {gate, pitch, vel}
 
         if not (self.events and #self.events > 0) -- nothing to play
-        then return {} end
+        then return end
 
         --------------------------------------------------------------------
         -- Fetch next event and convert to voltages
@@ -769,8 +756,6 @@ return {
                                                                velV
 
         self.gateTimer = ev.duration or 0.25 -- seconds high
-
-        return {[1] = gateV, [2] = pitchV, [3] = velV}
     end,
 
     ----------------------------------------------------------------------
@@ -789,7 +774,7 @@ return {
         if self.parameters[iterations_idx] ~=
             self.last_parameters[iterations_idx] then
             self.sequencer.iterations = self.parameters[iterations_idx]
-            self.expanded = self.sequencer:expand()
+            self.expanded = self.sequencer:expand() -- Re-expand here for iteration changes
             needs_reinterpretation = true -- Re-interpretation follows re-expansion
             self.last_parameters[iterations_idx] =
                 self.parameters[iterations_idx]
@@ -818,7 +803,7 @@ return {
             local current_scale_name = ScaleNames[current_scale_idx]
             local current_scale = MusicalScales[current_scale_name]
             -- Deep compare tables (simple reference compare won't work)
-            local scale_changed = #current_scale ~= #self.sequencer.scale
+            local scale_changed = (#current_scale ~= #self.sequencer.scale)
             if not scale_changed then
                 for i = 1, #current_scale do
                     if current_scale[i] ~= self.sequencer.scale[i] then
@@ -835,37 +820,47 @@ return {
                 self.parameters[scale_idx_param]
         end
 
-        -- Check Velocity Macro, Duration Macro, Probability Seed (requires config update)
+        -- Check Velocity Macro, Duration Macro, Probability Mix
         local velocity_macro_idx = self.param_indices.velocity_macro
         local duration_macro_idx = self.param_indices.duration_macro
-        local probability_seed_idx = self.param_indices.probability_seed
+        local probability_mix_idx = self.param_indices.probability_mix
+
+        local config_params_changed = false
 
         if self.parameters[velocity_macro_idx] ~=
-            self.last_parameters[velocity_macro_idx] or
-            self.parameters[duration_macro_idx] ~=
-            self.last_parameters[duration_macro_idx] or
-            self.parameters[probability_seed_idx] ~=
-            self.last_parameters[probability_seed_idx] then
-            -- Call helper to update sequencer ranges/probabilities
-            -- The helper returns true if probabilities changed (requiring re-expansion implicitly)
-            -- or if ranges changed (requiring re-interpretation)
+            self.last_parameters[velocity_macro_idx] then
+            config_params_changed = true
+        end
+        if self.parameters[duration_macro_idx] ~=
+            self.last_parameters[duration_macro_idx] then
+            config_params_changed = true
+        end
+        if self.parameters[probability_mix_idx] ~=
+            self.last_parameters[probability_mix_idx] then
+            config_params_changed = true
+        end
+
+        if config_params_changed then
+            -- Call helper to update sequencer ranges/probabilities/generator
             if _update_sequencer_config(self) then
+                -- Helper returned true, meaning re-interpretation (and maybe re-expansion) is needed
                 needs_reinterpretation = true
             end
-            -- Update last known values
+            -- Update last known values AFTER calling the helper
             self.last_parameters[velocity_macro_idx] =
                 self.parameters[velocity_macro_idx]
             self.last_parameters[duration_macro_idx] =
                 self.parameters[duration_macro_idx]
-            self.last_parameters[probability_seed_idx] =
-                self.parameters[probability_seed_idx]
+            self.last_parameters[probability_mix_idx] =
+                self.parameters[probability_mix_idx]
         end
 
         --------------------------------------------------------------------
         -- 2. If any relevant parameter changed, update events and drawing
         --------------------------------------------------------------------
         if needs_reinterpretation then
-            -- self.expanded string was already updated if necessary by _update_sequencer_config
+            -- expand() is now called *inside* _update_sequencer_config if probabilities changed.
+            -- We only need to call interpret() here using the (potentially updated) self.expanded string.
             self.events = self.sequencer:interpret(self.expanded)
             -- Regenerate draw list and store mapping functions/options
             if #self.events > 0 then -- Avoid error if interpretation yields nothing
@@ -874,6 +869,10 @@ return {
             else
                 self.drawlist = {} -- Clear drawlist if no events
                 self.events = {} -- Ensure events table is empty
+                -- Assign dummy functions/opts to avoid errors later if needed
+                self.time2x = function() return 0 end
+                self.pitch2y = function() return 0 end
+                self.drawOpts = {}
             end
             self.eventIdx = 1 -- Restart sequence from the beginning
         end
@@ -907,14 +906,10 @@ return {
 
         -- Kill any gate that might still be high
         self.gateTimer = 0
-        local out = {}
 
         if self.outState and self.outState[1] ~= 0 then
             self.outState[1] = 0 -- gate LOW
-            out[1] = 0
         end
-
-        return out -- send 0 V gate if it changed
     end,
 
     -- == Drawing Function (Called every ~33ms / 30fps if defined) ==
@@ -935,27 +930,25 @@ return {
 
             local display_str = root_name .. octave .. " " .. scale_name
             local text_width = #display_str * 4 -- Tiny text character width
-            local screen_width = 256 -- Fixed screen width
+            local screen_width = 255 -- Fixed screen width
             local margin = 8
             local x_pos = screen_width - text_width - margin
 
-            drawTinyText(x_pos, 12, display_str, 15)
+            drawTinyText(x_pos, 12, display_str)
 
             -- Draw macro values below the root/scale
             local vel_macro = self.parameters[self.param_indices.velocity_macro]
             local dur_macro = self.parameters[self.param_indices.duration_macro]
-            local prob_seed = self.parameters[self.param_indices
-                                  .probability_seed]
+            local prob_seed =
+                self.parameters[self.param_indices.probability_mix]
 
             -- Format the string (ensure values are rounded/integers for display)
-            local macro_str = string.format("V:%d D:%d P:%d",
-                                            math.floor(vel_macro + 0.5),
-                                            math.floor(dur_macro + 0.5),
-                                            math.floor(prob_seed + 0.5))
+            local macro_str = string.format("V:%d D:%d P:%d", vel_macro,
+                                            dur_macro, prob_seed)
             local macro_text_width = #macro_str * 4
             local macro_x_pos = screen_width - macro_text_width - margin
 
-            drawTinyText(macro_x_pos, 20, macro_str, 4) -- Draw on the next line (y=20)
+            drawTinyText(macro_x_pos, 20, macro_str) -- Draw on the next line (y=20)
         end
 
         -- 1. Draw the static score elements
@@ -1041,8 +1034,8 @@ return {
         if self.parameters and self.param_indices then
             local vel_macro = self.parameters[self.param_indices.velocity_macro]
             local dur_macro = self.parameters[self.param_indices.duration_macro]
-            local prob_seed = self.parameters[self.param_indices
-                                  .probability_seed]
+            local prob_seed =
+                self.parameters[self.param_indices.probability_mix]
 
             -- Normalize values (0-100 for macros, 0-127 for seed)
             pot_values[1] = math.max(0.0, math.min(1.0, vel_macro / 100.0))
@@ -1076,9 +1069,9 @@ return {
         setParameter(algIdx, self.parameterOffset + paramIdx, newVal)
     end,
 
-    pot3Turn = function(self, value) -- Controls Probability Macro (0-127)
+    pot3Turn = function(self, value) -- Controls Probability Mix (0-127)
         local algIdx = getCurrentAlgorithm()
-        local paramIdx = self.param_indices.probability_seed
+        local paramIdx = self.param_indices.probability_mix -- Use renamed index
         -- Map pot 0.0-1.0 to parameter 0-127
         local newVal = value * 127
         newVal = math.max(0, math.min(newVal, 127)) -- Clamp 0-127
@@ -1096,8 +1089,8 @@ return {
                                        .velocity_macro]
             state.duration_macro = self.parameters[self.param_indices
                                        .duration_macro]
-            state.probability_seed = self.parameters[self.param_indices
-                                         .probability_seed]
+            state.probability_mix = self.parameters[self.param_indices
+                                        .probability_mix] -- Save mix value
             state.randomize = self.parameters[self.param_indices.randomize]
             print(self.name .. ": Serialising state")
         else

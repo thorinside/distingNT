@@ -694,7 +694,7 @@ return {
 
             parameters = {
                 [self.param_indices.iterations] = {
-                    "Iterations", 1, 5, initial_iterations
+                    "Iterations", 1, 7, initial_iterations
                 },
                 [self.param_indices.root_note] = {
                     "Root Note", RootNoteNames, initial_root_note_idx

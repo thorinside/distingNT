@@ -85,10 +85,12 @@ end
 ----------------------------------------------------------------------
 
 -- Pick one key from a `{ value = weight, ... }` table
-local function weighted_choice(tbl)
+-- Now a method using the stored deterministic generator
+function LSystemSequencer:weighted_choice(tbl)
     local total, acc = 0, 0
     for _, w in pairs(tbl) do total = total + w end
-    local r = math.random() * total
+    -- Use the stored generator instead of math.random
+    local r = (self.rand_gen and self.rand_gen() or math.random()) * total
     for k, w in pairs(tbl) do
         acc = acc + w
         if r <= acc then return k end
@@ -97,12 +99,18 @@ end
 
 -- Favour stepwise motion – weights can be tweaked to taste
 local STEP_WEIGHTS = {[-2] = 1, [-1] = 3, [0] = 4, [1] = 3, [2] = 1}
-local function weighted_step() return weighted_choice(STEP_WEIGHTS) end
+-- Now a method using self:weighted_choice
+function LSystemSequencer:weighted_step()
+    return self:weighted_choice(STEP_WEIGHTS)
+end
 
 -- Triangular‑ish random number between a & b (closer to middle on average)
-local function triangular_rand(a, b)
+-- Now a method using the stored deterministic generator
+function LSystemSequencer:triangular_rand(a, b)
     -- Sum of two uniforms gives triangular PDF
-    local u = math.random() + math.random()
+    -- Use the stored generator instead of math.random
+    local u = (self.rand_gen and self.rand_gen() or math.random()) +
+                  (self.rand_gen and self.rand_gen() or math.random())
     return a + (b - a) * u * 0.5 -- scale to [0,1], peak at centre
 end
 
@@ -112,6 +120,7 @@ end
 
 function LSystemSequencer.new(config)
     local self = {}
+    setmetatable(self, {__index = LSystemSequencer}) -- Allow calling methods
 
     ------------------------------------------------------------------
     -- Config
@@ -134,11 +143,14 @@ function LSystemSequencer.new(config)
     ------------------------------------------------------------------
     -- L‑system expansion rules
     ------------------------------------------------------------------
+    -- These now implicitly call self:weighted_choice via the metatable
     self.rules = {
-        P = function() return weighted_choice(self.probabilities.P) end,
-        R = function() return weighted_choice(self.probabilities.R) end,
-        V = function() return weighted_choice(self.probabilities.V) end
+        P = function(seq) return seq:weighted_choice(seq.probabilities.P) end,
+        R = function(seq) return seq:weighted_choice(seq.probabilities.R) end,
+        V = function(seq) return seq:weighted_choice(seq.probabilities.V) end
     }
+    -- Store the initial generator based on config or default seed (will be overwritten by _update_sequencer_config in init)
+    self.rand_gen = lcg(config.probability_seed or 42)
 
     ------------------------------------------------------------------
     -- Expand axiom for N iterations
@@ -146,13 +158,14 @@ function LSystemSequencer.new(config)
     function self:expand()
         local current = self.axiom
         for _ = 1, self.iterations do
-            local next = {}
+            local next_expansion = {} -- Renamed to avoid conflict
             for i = 1, #current do
                 local sym = current:sub(i, i)
-                local repl = self.rules[sym] and self.rules[sym]() or sym
-                next[#next + 1] = repl
+                -- Pass 'self' (the sequencer object) to the rule function
+                local repl = self.rules[sym] and self.rules[sym](self) or sym
+                next_expansion[#next_expansion + 1] = repl
             end
-            current = table.concat(next)
+            current = table.concat(next_expansion)
         end
         return current
     end
@@ -176,7 +189,7 @@ function LSystemSequencer.new(config)
                 ------------------------------------------------------------------
                 -- Choose next scale step (mostly stepwise, occasional leaps)
                 ------------------------------------------------------------------
-                pitch_idx = pitch_idx + weighted_step()
+                pitch_idx = pitch_idx + self:weighted_step() -- Call as method
                 if pitch_idx < 1 then pitch_idx = 1 end
 
                 -- Wrap into octaves for musical continuity
@@ -206,14 +219,17 @@ function LSystemSequencer.new(config)
                 local min_d, max_d = unpack(self.duration_range)
                 local mid_d = (min_d + max_d) * 0.5
                 local choices = {min_d, mid_d, max_d}
-                duration = choices[math.random(#choices)]
+                -- Use stored generator to pick index
+                local idx = math.floor((self.rand_gen and self.rand_gen() or
+                                           math.random()) * #choices) + 1
+                duration = choices[math.max(1, math.min(idx, #choices))] -- Clamp index just in case
 
             elseif sym == "V" then
                 ------------------------------------------------------------------
                 -- Choose velocity with triangular distribution (natural feel)
                 ------------------------------------------------------------------
                 local vmin, vmax = unpack(self.velocity_range)
-                velocity = triangular_rand(vmin, vmax)
+                velocity = self:triangular_rand(vmin, vmax) -- Call as method
             end
         end
 
@@ -539,6 +555,10 @@ end
 -- Helper function to randomize the sequence
 local function _randomize_sequence(self)
     print(self.name .. ": Randomizing sequence")
+    -- Explicitly update the stored random generator based on current seed
+    local prob_seed = self.parameters[self.param_indices.probability_seed]
+    self.sequencer.rand_gen = lcg(prob_seed) -- Recreate the generator
+
     self.expanded = self.sequencer:expand()
     self.events = self.sequencer:interpret(self.expanded)
     -- Regenerate draw list and store mapping functions/options
@@ -636,15 +656,17 @@ return {
             axiom = "P",
             iterations = initial_iterations,
             base_note = base_midi_note,
-            scale = selected_scale
+            scale = selected_scale,
+            probability_seed = initial_probability_seed -- Pass seed to constructor
             -- velocity_range, duration_range, probabilities will be set by helper
         }
         self.sequencer = LSystemSequencer.new(temp_config)
 
         -- Now call the helper to calculate and apply ranges/probabilities
-        _update_sequencer_config(self) -- This calculates and sets ranges/probs in self.sequencer
+        -- This also calculates and stores the initial self.sequencer.rand_gen
+        _update_sequencer_config(self)
 
-        -- Initial expansion and interpretation
+        -- Initial expansion and interpretation (uses the just-set rand_gen)
         self.expanded = self.sequencer:expand()
         self.events = self.sequencer:interpret(self.expanded)
 
@@ -843,6 +865,7 @@ return {
         -- 2. If any relevant parameter changed, update events and drawing
         --------------------------------------------------------------------
         if needs_reinterpretation then
+            -- self.expanded string was already updated if necessary by _update_sequencer_config
             self.events = self.sequencer:interpret(self.expanded)
             -- Regenerate draw list and store mapping functions/options
             if #self.events > 0 then -- Avoid error if interpretation yields nothing
